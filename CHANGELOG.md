@@ -7,7 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-05-25
+
 ### Added
+- `mks_servo/profile.hpp` — value-typed `Profile` aggregate matching
+  the Python lib's YAML profile schema 1:1 (transport / config /
+  mechanical / limits / origin / characterization). Two helpers:
+  `apply_profile_to_motor()` (in-memory copy, no wire activity) and
+  `apply_profile_to_firmware()` (pushes work_mode, microsteps,
+  work_current_ma via the SET_* opcodes). No YAML parser bundled —
+  users wire in their own format.
+- `Motor::move_relative_shortest(delta_deg)` — picks the equivalent
+  rotation in [-180, 180] before executing, for cyclic / orientation
+  use cases (turret joints, gripper rotation). Only safe with no
+  position limits.
+- `Motor::set_auto_clear_protection(bool)` — when on, a refused MOVE
+  (firmware ack 0x00, typically stall protection) triggers
+  RELEASE_PROTECTION + one retry. Off by default.
 - `mks_servo/diagnostics.hpp` — `Diagnostics` helper exposing the
   driver's debug surface: `is_protection_latched()`,
   `clear_protection()`, `pulses_received()`, `motor_status()`, and a
@@ -15,19 +31,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   and you need to find out what the firmware thinks is happening.
 - `RawDriver::read_protect_status()` — cmd 0x3E wrapper (the read
   half of release_protection).
-- `examples/hil_diagnostics.cpp` — exercises every Diagnostics path
-  on the live driver, including a deliberate stall provoke.
-
-### Changed
-- `examples/hil_soak.cpp` defaults adjusted to match the bench
-  example (poll_interval=0, consecutive=1) which is the reliable
-  configuration at 256k baud. The previous conservative defaults
-  (poll=2ms, consecutive=2) ran into intermittent ReadFailed on the
-  development rig after extended sessions; the new defaults run
-  200/200 cleanly.
-
-### Added (continued)
-- `mks_servo/characterize.hpp` — `CharacterizationSuite` ported from the
+- `mks_servo/characterize.hpp` — `CharacterizationSuite` ported from
+  the Python reference. Four tests:
   Python reference. Four tests:
     - P1 (precision): repeatability spread (mean / sigma / peak) over N
       moves to the same target.
@@ -48,6 +53,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   honored cleanly when sent close to the first target's deceleration
   point, but causes a long low-velocity creep when sent earlier. See
   `docs/design.md` §6 for the full writeup.
+
+### Changed
+- `examples/hil_soak.cpp` defaults adjusted to match the bench
+  example (poll_interval=0, consecutive=1) which is the reliable
+  configuration at 256k baud. The previous conservative defaults
+  (poll=2ms, consecutive=2) ran into intermittent ReadFailed on the
+  development rig after extended sessions; the new defaults run
+  200/200 cleanly.
+
+### HIL-validated on the development NEMA17 + 12V/3A rig
+- Mock suite: 6 binaries / ~55 cases / >200 assertions, 100% green
+- `hil_motor_group`: 5/5 consecutive runs, sub-2° accuracy
+- `hil_soak`: 200/200 quarter-turns continuous, mean 317 ms,
+  p99 = 320 ms, 0 failures
+- `bench_quarter_turn`: 10/10, mean 55 ms at 256 kbaud
+- `hil_shortest`: 6/6 cases including wrap-around at ±180°
+- `hil_profile`: position-reject / speed-clamp / legal-move paths all
+  exercised correctly
+- `hil_diagnostics`: every read path returns expected values; clear
+  accepted by firmware
+- `characterize`: P1 sigma 0.009°, P3 rms 0.066-0.131° (50-500 rpm),
+  P5 max follow 0.66°, S2 reaches the velocity-mode ceiling for the
+  unloaded rig (~100 rpm) — limit documented in design.md §7.
 
 ## [0.1.0] — initial scaffolding & HIL-validated v1.0 candidate
 
