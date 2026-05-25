@@ -1,0 +1,25 @@
+if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    message(STATUS "Examples require Linux (termios2); skipping on this platform.")
+    return()
+endif()
+
+function(mks_example name)
+    add_executable(${name} ${name}.cpp)
+    target_link_libraries(${name} PRIVATE mks_servo::mks_servo)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
+        target_compile_options(${name} PRIVATE
+            -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion
+        )
+        if(MKS_SERVO_WERROR)
+            target_compile_options(${name} PRIVATE -Werror)
+        endif()
+    endif()
+endfunction()
+
+mks_example(read_encoder)
+mks_example(move_quarter_turn)
+mks_example(stress_read)
+mks_example(bench_quarter_turn)
+mks_example(rt_demo)
+mks_example(hil_motor_group)
+mks_example(hil_soak)

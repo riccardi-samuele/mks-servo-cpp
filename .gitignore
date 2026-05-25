@@ -1,0 +1,24 @@
+# Build
+build/
+build-*/
+out/
+cmake-build-*/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.cache/
+compile_commands.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Python reference (kept locally only)
+reference/
+
+# CTest junk
+Testing/
+CTestTestfile.cmake

@@ -1,0 +1,50 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: ${{ matrix.os }} · ${{ matrix.compiler }} · C++${{ matrix.cxx_std }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        compiler: [gcc, clang]
+        cxx_std: [17, 20]
+        include:
+          - os: macos-latest
+            compiler: clang
+            cxx_std: 17
+          - os: windows-latest
+            compiler: msvc
+            cxx_std: 17
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set compiler (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          if [ "${{ matrix.compiler }}" = "clang" ]; then
+            echo "CC=clang" >> $GITHUB_ENV
+            echo "CXX=clang++" >> $GITHUB_ENV
+          else
+            echo "CC=gcc" >> $GITHUB_ENV
+            echo "CXX=g++" >> $GITHUB_ENV
+          fi
+
+      - name: Configure
+        run: cmake -S . -B build
+             -DCMAKE_BUILD_TYPE=Release
+             -DCMAKE_CXX_STANDARD=${{ matrix.cxx_std }}
+             -DMKS_SERVO_BUILD_TESTS=ON
+             -DMKS_SERVO_WERROR=ON
+
+      - name: Build
+        run: cmake --build build --parallel --config Release
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure -C Release
