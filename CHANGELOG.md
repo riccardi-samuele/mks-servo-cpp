@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- `examples/hil_chained_moves.cpp` — HIL experiment that probes the
+  firmware's "real-time MOVE_ABS_AXIS update" feature with three
+  retarget timings. Surfaced a bimodal behaviour: the update is
+  honored cleanly when sent close to the first target's deceleration
+  point, but causes a long low-velocity creep when sent earlier. See
+  `docs/design.md` §6 for the full writeup.
+
 ## [0.1.0] — initial scaffolding & HIL-validated v1.0 candidate
 
 First implementation. Six header-only modules, six HIL-validated

@@ -132,6 +132,34 @@ after one of these (~200 ms). `Motor::set_origin` therefore sleeps
 200 ms before and after the `SET_ZERO_POINT` call, with a one-time
 retry on read-timeout — matching the Python reference's proven pattern.
 
+### 6. `MOVE_ABS_AXIS` "real-time target update" is conditional
+
+The firmware spec lists MOVE_ABS_AXIS as supporting real-time target
+updates (send a new MOVE_ABS_AXIS while the motor is already moving,
+the firmware re-targets without stopping). The
+[`hil_chained_moves` example](../examples/hil_chained_moves.cpp)
+HIL-tested this on the development rig and found the behaviour to be
+bimodal:
+
+| When the second MOVE_ABS_AXIS is sent | Total time to final target | Behaviour |
+|---|---|---|
+| Before the motor enters its deceleration phase for the first target | ~2.7 × baseline | Firmware appears confused; enters a long low-velocity creep |
+| After the motor would start decelerating (i.e. close to the first target) | ~0.9 × baseline (actually faster than baseline) | Firmware honors the new target cleanly; the original deceleration phase is replaced by continued cruise |
+
+Practical consequence: the documented "real-time update" feature is
+real but only works in a narrow window — specifically, when the
+firmware is *about* to start decelerating for the original target. A
+naive "retarget mid-motion" API would do the wrong thing most of the
+time, so the library does **not** ship one in v1.0. Users who want to
+chain moves on the same motor without a deceleration penalty can call
+`RawDriver::dispatch_move_absolute_axis` directly with timing
+estimated from a measured motion profile (peak rpm, acc time);
+characterizing those numbers for the actual motor + load is part of
+what the library expects callers to do upstream.
+
+If you find a different firmware revision behaves differently, the
+hil_chained_moves example can be re-run as a quick regression check.
+
 ## Why frame-scanning transact
 
 The naive transact reads exactly `expected_bytes` from the fd and
