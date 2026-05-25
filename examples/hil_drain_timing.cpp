@@ -126,8 +126,11 @@ int main(int argc, char** argv) {
             continue;
         }
         const std::uint64_t t1 = now_us();
-        // Drain whatever's there.
-        (void)::read(t.fd(), buf, sizeof(buf));
+        // Drain whatever's there. Capture the return into a local so
+        // glibc's warn_unused_result on read() doesn't fire under
+        // -Werror on hardened toolchains.
+        const ssize_t drained = ::read(t.fd(), buf, sizeof(buf));
+        (void)drained;
 
         deltas_us.push_back(static_cast<int>(t1 - t0));
         sleep_ms(50);
