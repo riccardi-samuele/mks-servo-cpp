@@ -300,6 +300,12 @@ public:
         return ack_to_bool(r);
     }
 
+    // Cmd 0x3E: true if stall protection is currently latched.
+    Result<bool> read_protect_status() noexcept {
+        auto r = txn(op::READ_PROTECT_STATUS, nullptr, 0, 1);
+        return ack_to_bool(r);
+    }
+
     // Cmd 0x92: reset the firmware's internal absolute-position counter to
     // the current rotor position. Subsequent MOVE_ABS_AXIS commands are
     // relative to this new zero. Persists in flash.

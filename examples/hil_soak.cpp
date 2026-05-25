@@ -112,10 +112,10 @@ int main(int argc, char** argv) {
             break;
         }
         const auto w = m.wait_for_position(target_counts,
-                                           /*tolerance=*/32,
+                                           /*tolerance=*/50,
                                            /*timeout_us=*/2'000'000,
-                                           /*consecutive=*/2,
-                                           /*poll_interval_us=*/2000);  // 500 Hz, gentle
+                                           /*consecutive=*/1,
+                                           /*poll_interval_us=*/0);
         const std::uint64_t t1 = now_us();
         if (w != MotorStatusEx::OK) {
             std::fprintf(stderr, "move %d: wait failed (status=%d)\n",

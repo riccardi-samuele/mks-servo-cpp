@@ -8,6 +8,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- `mks_servo/diagnostics.hpp` — `Diagnostics` helper exposing the
+  driver's debug surface: `is_protection_latched()`,
+  `clear_protection()`, `pulses_received()`, `motor_status()`, and a
+  `status_text()` enum-to-string. Useful when a robot is misbehaving
+  and you need to find out what the firmware thinks is happening.
+- `RawDriver::read_protect_status()` — cmd 0x3E wrapper (the read
+  half of release_protection).
+- `examples/hil_diagnostics.cpp` — exercises every Diagnostics path
+  on the live driver, including a deliberate stall provoke.
+
+### Changed
+- `examples/hil_soak.cpp` defaults adjusted to match the bench
+  example (poll_interval=0, consecutive=1) which is the reliable
+  configuration at 256k baud. The previous conservative defaults
+  (poll=2ms, consecutive=2) ran into intermittent ReadFailed on the
+  development rig after extended sessions; the new defaults run
+  200/200 cleanly.
+
+### Added (continued)
 - `mks_servo/characterize.hpp` — `CharacterizationSuite` ported from the
   Python reference. Four tests:
     - P1 (precision): repeatability spread (mean / sigma / peak) over N
