@@ -8,6 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- `mks_servo/characterize.hpp` — `CharacterizationSuite` ported from the
+  Python reference. Four tests:
+    - P1 (precision): repeatability spread (mean / sigma / peak) over N
+      moves to the same target.
+    - P3 (error vs RPM): RMS of (read − target) at each commanded RPM.
+      Tolerant of per-RPM failures: failed RPMs land in `failed_rpms`,
+      successful ones in `rpm_samples` + `rms_error_deg`.
+    - P5 (follow error): max / RMS of the firmware's angle-error
+      register during a continuous sweep at constant RPM.
+    - S2 (acceleration): time-to-target across a list of acc parameter
+      values via MOVE_SPEED (velocity mode); reports max observed RPM.
+- `RawDriver::move_speed(rpm, acc, direction)` — cmd 0xF6 wrapper used
+  by S2; not previously exposed.
+- `examples/characterize.cpp` — HIL example that runs all four tests
+  and prints the results.
 - `examples/hil_chained_moves.cpp` — HIL experiment that probes the
   firmware's "real-time MOVE_ABS_AXIS update" feature with three
   retarget timings. Surfaced a bimodal behaviour: the update is

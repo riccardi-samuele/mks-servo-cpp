@@ -160,6 +160,23 @@ what the library expects callers to do upstream.
 If you find a different firmware revision behaves differently, the
 hil_chained_moves example can be re-run as a quick regression check.
 
+### 7. Velocity-mode top speed is supply- and load-dependent
+
+`MOVE_SPEED` (cmd 0xF6) runs the motor continuously at a commanded RPM
+rather than to a position target. The firmware accepts targets up to
+3000 RPM in vFOC work mode, but the actual sustained speed on a real
+rig is bounded by supply voltage and load. The development
+NEMA17 + 12V/3A + unloaded shaft caps out around 100 RPM in velocity
+mode regardless of acc parameter; 24V + a representative load lifts
+the same hardware to 1000+ RPM cleanly.
+
+Practical consequence: do not assume `MOVE_SPEED(N)` reaches `N`.
+Measure with `CharacterizationSuite::run_s2_acceleration()` on the
+real setup and persist the achievable RPM in the application's motion
+plan. Position-mode moves (`MOVE_ABS_AXIS`, `MOVE_REL_AXIS`) are NOT
+subject to the same limit — they comfortably push the same hardware
+above 2000 RPM transient.
+
 ## Why frame-scanning transact
 
 The naive transact reads exactly `expected_bytes` from the fd and

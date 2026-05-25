@@ -217,6 +217,24 @@ public:
         return ack_to_bool(r);
     }
 
+    // Cmd 0xF6: velocity-mode move. Motor runs at `rpm` in the given
+    // direction with the requested acceleration. Stop by calling this
+    // again with rpm=0.
+    //
+    // Frame: dir<<7 | rpm_hi(4 bits) | rpm_lo(8 bits) | acc(1 byte)
+    Result<bool> move_speed(std::uint16_t rpm,
+                            std::uint8_t  acc,
+                            Direction     direction = Direction::CW) noexcept {
+        const std::uint8_t dir_bit = (direction == Direction::CCW) ? 0x80 : 0x00;
+        const std::uint8_t d[3] = {
+            static_cast<std::uint8_t>(dir_bit | ((rpm >> 8) & 0x0F)),
+            static_cast<std::uint8_t>(rpm & 0xFF),
+            acc,
+        };
+        auto r = txn(op::MOVE_SPEED, d, 3, 1);
+        return ack_to_bool(r);
+    }
+
     // ─── Move commands (fire-and-forget) ─────────────────────────
     //
     // No ack read. Returns the write-side Transport::Status only. The motor
