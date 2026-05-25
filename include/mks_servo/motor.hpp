@@ -103,6 +103,15 @@ public:
     void set_gear_ratio(double r)                  noexcept { mech_.gear_ratio = r; }
     void set_origin_offset_counts(std::int32_t c)  noexcept { mech_.origin_offset_counts = c; }
 
+    // Auto-clear stall protection on dispatch refusal.
+    // If true, Motor::write detects when the firmware refuses a MOVE
+    // (ack payload 0x00 — usually because stall protection latched),
+    // issues RELEASE_PROTECTION, and retries the MOVE once. The retry
+    // result is what gets returned to the caller. Off by default so
+    // applications make an explicit opt-in to silent recovery.
+    bool auto_clear_protection() const noexcept { return auto_clear_protection_; }
+    void set_auto_clear_protection(bool on) noexcept { auto_clear_protection_ = on; }
+
     const PositionLimits& position_limits() const noexcept { return pos_lim_; }
     void set_position_limits(double min_deg, double max_deg,
                              OnViolation policy = OnViolation::Reject) noexcept {
@@ -177,12 +186,25 @@ public:
         // loop occasionally exceeds its byte budget under timing noise.
         // Users who need maximum dispatch speed can call dispatch_write()
         // and manage the bus state themselves.
-        const auto r = raw_.move_absolute_axis(target_counts, rpm, mp.acc);
+        auto r = raw_.move_absolute_axis(target_counts, rpm, mp.acc);
         if (!r.ok()) {
             out.status = (r.t_status != Transport::Status::OK)
                 ? MotorStatusEx::TransportError
                 : MotorStatusEx::ParseError;
             return out;
+        }
+        if (!r.value && auto_clear_protection_) {
+            // Firmware refused — likely stall protection latched. Try to
+            // recover by clearing the latch and re-issuing the MOVE.
+            (void)raw_.release_protection();
+            sleep_us(200'000);
+            r = raw_.move_absolute_axis(target_counts, rpm, mp.acc);
+            if (!r.ok()) {
+                out.status = (r.t_status != Transport::Status::OK)
+                    ? MotorStatusEx::TransportError
+                    : MotorStatusEx::ParseError;
+                return out;
+            }
         }
         if (!r.value) {
             out.status = MotorStatusEx::NotEnabled;
@@ -267,6 +289,32 @@ public:
         }
         return write(current.value + delta_deg, mp, blocking,
                      tolerance_counts, timeout_us);
+    }
+
+    // Shortest-path variant of move_relative. Given a desired rotation
+    // delta_deg, picks the equivalent rotation in [-180, 180] before
+    // executing — so e.g. move_relative_shortest(+270°) actually rotates
+    // -90°, ending up at the same orientation modulo 360°.
+    //
+    // ONLY safe when the motor's mechanical range is unbounded (no end
+    // stops). If position limits are configured, those still apply to
+    // the chosen (shorter) rotation; an absolute target outside the
+    // limits will be Reject / Clamp / Warn per policy.
+    //
+    // Useful for cyclic / orientation tasks where what matters is the
+    // final pose modulo 360°, not the path taken to get there (typical
+    // for revolute joints, turret-style mechanisms, gripper rotation).
+    MResult<bool> move_relative_shortest(double         delta_deg,
+                                         MoveParams     mp                = {},
+                                         bool           blocking          = true,
+                                         std::int32_t   tolerance_counts  = 16,
+                                         std::uint64_t  timeout_us        = 5'000'000) noexcept {
+        // Wrap to [-180, 180]. fmod handles signs, then we shift by 180,
+        // mod again, and subtract 180 to land in the symmetric range.
+        double d = std::fmod(delta_deg + 180.0, 360.0);
+        if (d < 0.0) d += 360.0;
+        d -= 180.0;
+        return move_relative(d, mp, blocking, tolerance_counts, timeout_us);
     }
 
     // ─── Origin ───────────────────────────────────────────────
@@ -436,6 +484,7 @@ private:
     Mechanical     mech_{};
     PositionLimits pos_lim_{};
     SpeedLimits    spd_lim_{};
+    bool           auto_clear_protection_ = false;
 };
 
 }  // namespace mks_servo

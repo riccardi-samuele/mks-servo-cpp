@@ -311,3 +311,119 @@ TEST_CASE("Motor::set_origin_soft captures encoder counts as new zero") {
 
     ::close(p.peer_fd);
 }
+
+// ─── auto_clear_protection ────────────────────────────────────────
+//
+// When the firmware refuses a MOVE (ack payload 0x00, typically because
+// stall protection has latched), Motor::write should — if auto_clear is
+// enabled — issue RELEASE_PROTECTION and retry the MOVE once. The
+// retry's result is what gets returned.
+
+TEST_CASE("Motor::write returns NotEnabled on refused MOVE when auto_clear is off") {
+    auto p = make_paired_transport();
+    RawDriver d(p.transport, 0x01, 100'000);
+    Motor m(d);
+    // auto_clear defaults to false
+
+    std::thread t([&] {
+        // Read MOVE_ABS_AXIS request (11 bytes), respond with refusal (0x00).
+        (void)read_n(p.peer_fd, 11);
+        std::uint8_t body[] = {0xFB, 0x01, 0xF5, 0x00};  // payload 0x00 = refused
+        std::uint8_t frame[5];
+        std::memcpy(frame, body, 4);
+        frame[4] = mks_servo::checksum8(body, 4);
+        mock_write(p.peer_fd, frame, 5);
+    });
+
+    auto r = m.write(45.0, {}, /*blocking=*/false);
+    t.join();
+    CHECK_FALSE(r.ok());
+    CHECK(r.status == MotorStatusEx::NotEnabled);
+    ::close(p.peer_fd);
+}
+
+TEST_CASE("Motor::write recovers via release_protection + retry when auto_clear is on") {
+    auto p = make_paired_transport();
+    RawDriver d(p.transport, 0x01, 100'000);
+    Motor m(d);
+    m.set_auto_clear_protection(true);
+
+    std::thread t([&] {
+        // 1. First MOVE — respond with refusal (0x00).
+        auto req1 = read_n(p.peer_fd, 11);
+        REQUIRE(req1.size() == 11);
+        CHECK(req1[2] == 0xF5);  // MOVE_ABS_AXIS
+        {
+            std::uint8_t body[] = {0xFB, 0x01, 0xF5, 0x00};
+            std::uint8_t frame[5];
+            std::memcpy(frame, body, 4);
+            frame[4] = mks_servo::checksum8(body, 4);
+            mock_write(p.peer_fd, frame, 5);
+        }
+
+        // 2. RELEASE_PROTECTION (0x3D, 4 bytes request).
+        auto req2 = read_n(p.peer_fd, 4);
+        REQUIRE(req2.size() == 4);
+        CHECK(req2[2] == 0x3D);
+        {
+            std::uint8_t body[] = {0xFB, 0x01, 0x3D, 0x01};
+            std::uint8_t frame[5];
+            std::memcpy(frame, body, 4);
+            frame[4] = mks_servo::checksum8(body, 4);
+            mock_write(p.peer_fd, frame, 5);
+        }
+
+        // 3. Second MOVE_ABS_AXIS — respond with success (0x01).
+        auto req3 = read_n(p.peer_fd, 11);
+        REQUIRE(req3.size() == 11);
+        CHECK(req3[2] == 0xF5);
+        {
+            std::uint8_t body[] = {0xFB, 0x01, 0xF5, 0x01};
+            std::uint8_t frame[5];
+            std::memcpy(frame, body, 4);
+            frame[4] = mks_servo::checksum8(body, 4);
+            mock_write(p.peer_fd, frame, 5);
+        }
+    });
+
+    auto r = m.write(45.0, {}, /*blocking=*/false);
+    t.join();
+    CHECK(r.ok());
+    CHECK(r.value);
+    ::close(p.peer_fd);
+}
+
+TEST_CASE("Motor::write surfaces NotEnabled if the retry also gets refused (auto_clear on)") {
+    auto p = make_paired_transport();
+    RawDriver d(p.transport, 0x01, 100'000);
+    Motor m(d);
+    m.set_auto_clear_protection(true);
+
+    std::thread t([&] {
+        // Both MOVEs respond with refusal, plus the release in between.
+        for (int i = 0; i < 2; ++i) {
+            auto req = read_n(p.peer_fd, 11);
+            REQUIRE(req.size() == 11);
+            std::uint8_t body[] = {0xFB, 0x01, 0xF5, 0x00};
+            std::uint8_t frame[5];
+            std::memcpy(frame, body, 4);
+            frame[4] = mks_servo::checksum8(body, 4);
+            mock_write(p.peer_fd, frame, 5);
+            if (i == 0) {
+                auto rel = read_n(p.peer_fd, 4);
+                REQUIRE(rel.size() == 4);
+                std::uint8_t rb[] = {0xFB, 0x01, 0x3D, 0x01};
+                std::uint8_t rf[5];
+                std::memcpy(rf, rb, 4);
+                rf[4] = mks_servo::checksum8(rb, 4);
+                mock_write(p.peer_fd, rf, 5);
+            }
+        }
+    });
+
+    auto r = m.write(45.0, {}, /*blocking=*/false);
+    t.join();
+    CHECK_FALSE(r.ok());
+    CHECK(r.status == MotorStatusEx::NotEnabled);
+    ::close(p.peer_fd);
+}
