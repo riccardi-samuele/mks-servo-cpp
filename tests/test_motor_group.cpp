@@ -147,7 +147,103 @@ TEST_CASE("MotorGroup::dispatch_all sends MOVE_ABS_AXIS and reads ack") {
 
     const auto s = g.dispatch_all(specs);
     for (auto& w : workers) w.join();
-    CHECK(s == Transport::Status::OK);
+    CHECK(s == MotorStatusEx::OK);
+}
+
+// ─── dispatch_all surfaces firmware refusal (ack=0x00) per-motor ───
+// Regression test for the bug where dispatch_all collapsed everything
+// except TransportError to OK, silently masking firmware refusals
+// (e.g. NotEnabled). Without this fix, wait_all_settled would then
+// time out polling a motor that never received its MOVE command.
+TEST_CASE("MotorGroup::dispatch_all reports NotEnabled when one motor's ack is 0x00") {
+    Rig rig;
+    MotorGroup g;
+    for (std::size_t i = 0; i < N_MOTORS; ++i) g.add(*rig.motors[i]);
+
+    const MoveSpec specs[N_MOTORS] = {
+        {  10.0, {500,  100}},
+        {  90.0, {800,  150}},
+        {-180.0, {1500, 255}},
+    };
+
+    // motor 0 and 2 ack 0x01 (success). motor 1 acks 0x00 (firmware
+    // refused — typically: stall protection latched, or the coil driver
+    // isn't ready).
+    const std::uint8_t ack_values[N_MOTORS] = {0x01, 0x00, 0x01};
+
+    std::array<std::thread, N_MOTORS> workers;
+    for (std::size_t i = 0; i < N_MOTORS; ++i) {
+        workers[i] = std::thread([&, i] {
+            auto req = read_n(rig.peer_fds[i], 11);
+            REQUIRE(req.size() == 11);
+            CHECK(req[2] == 0xF5);
+            std::uint8_t body[] = {0xFB, 0x01, 0xF5, ack_values[i]};
+            std::uint8_t frame[5];
+            std::memcpy(frame, body, 4);
+            frame[4] = mks_servo::checksum8(body, 4);
+            mock_write(rig.peer_fds[i], frame, 5);
+        });
+    }
+
+    MotorStatusEx per[N_MOTORS];
+    const auto s = g.dispatch_all(specs, per);
+    for (auto& w : workers) w.join();
+
+    // Aggregate reflects the failure.
+    CHECK(s == MotorStatusEx::NotEnabled);
+    // Crucially: per-motor preserves the truth for ALL motors, not just
+    // the failing one. The successful motors stay OK.
+    CHECK(per[0] == MotorStatusEx::OK);
+    CHECK(per[1] == MotorStatusEx::NotEnabled);
+    CHECK(per[2] == MotorStatusEx::OK);
+}
+
+// ─── move_all preserves per-motor info on dispatch failure ─────────
+// Regression test for the bug where move_all overwrote out_per_motor
+// with a uniform TransportError on any dispatch failure, losing the
+// per-motor fidelity that dispatch_all had carefully recorded.
+TEST_CASE("MotorGroup::move_all keeps dispatch_all's per-motor info when dispatch fails") {
+    Rig rig;
+    MotorGroup g;
+    for (std::size_t i = 0; i < N_MOTORS; ++i) g.add(*rig.motors[i]);
+
+    const MoveSpec specs[N_MOTORS] = {
+        {  10.0, {500,  100}},
+        {  90.0, {800,  150}},
+        {-180.0, {1500, 255}},
+    };
+
+    // Only motor 1 refuses (ack 0x00); the other two succeed.
+    const std::uint8_t ack_values[N_MOTORS] = {0x01, 0x00, 0x01};
+
+    std::array<std::thread, N_MOTORS> workers;
+    for (std::size_t i = 0; i < N_MOTORS; ++i) {
+        workers[i] = std::thread([&, i] {
+            auto req = read_n(rig.peer_fds[i], 11);
+            REQUIRE(req.size() == 11);
+            std::uint8_t body[] = {0xFB, 0x01, 0xF5, ack_values[i]};
+            std::uint8_t frame[5];
+            std::memcpy(frame, body, 4);
+            frame[4] = mks_servo::checksum8(body, 4);
+            mock_write(rig.peer_fds[i], frame, 5);
+        });
+    }
+
+    MotorStatusEx per[N_MOTORS];
+    const auto s = g.move_all(specs,
+                              /*tol=*/16,
+                              /*timeout_us=*/200'000,
+                              /*consec=*/2,
+                              /*poll_us=*/0,
+                              per);
+    for (auto& w : workers) w.join();
+
+    // move_all bails out before wait_all_settled because dispatch failed
+    // overall, but the per-motor info from dispatch_all is preserved.
+    CHECK(s == MotorStatusEx::NotEnabled);
+    CHECK(per[0] == MotorStatusEx::OK);
+    CHECK(per[1] == MotorStatusEx::NotEnabled);
+    CHECK(per[2] == MotorStatusEx::OK);
 }
 
 // ─── wait_all_settled: returns OK once every encoder is in tolerance ─

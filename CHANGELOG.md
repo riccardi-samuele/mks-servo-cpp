@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- `MotorGroup::dispatch_all` no longer silently masks firmware refusals.
+  Previously only `MotorStatusEx::TransportError` was surfaced; firmware
+  ack `0x00` (`NotEnabled`, e.g. stall-protection latched or coil driver
+  not ready), `ParseError` and `LimitExceeded` collapsed to `OK`, and
+  the downstream `wait_all_settled` would then poll a never-moving
+  motor until the full timeout. HIL-confirmed with one broken motor in
+  a 2-motor group: error-detection latency went from 3007 ms to 6.7 ms.
+- `MotorGroup::move_all` no longer clobbers `out_per_motor` with a
+  uniform `TransportError` on dispatch failure; the per-motor outcome
+  recorded by `dispatch_all` (some motors `OK`, the broken one
+  `NotEnabled`, …) is preserved for the caller. Also, the returned
+  aggregate now reflects the actual failure cause instead of
+  unconditionally `TransportError`.
+
+### Changed
+- `MotorGroup::dispatch_all` signature: returns `MotorStatusEx` (was
+  `Transport::Status`), `out_per_motor` is `MotorStatusEx*` (was
+  `Transport::Status*`). Breaking for callers, but pre-1.0; required
+  to carry per-motor `NotEnabled` / `LimitExceeded` info that the old
+  type couldn't represent.
+- `MotorGroup::move_all` is now fail-fast on dispatch failure: returns
+  immediately with the failure status without entering
+  `wait_all_settled`. CAVEAT: motors that dispatched OK are still
+  physically executing their moves when the call returns; the caller
+  owns recovery (emergency-stop, or wait on the subset). Documented in
+  the header.
+
 ## [0.2.0] — 2026-05-25
 
 ### Added

@@ -85,10 +85,11 @@ int main(int argc, char** argv) {
     for (int r = 0; r < 3; ++r) {
         std::int32_t targets[1] = { m.angle_to_counts(rounds[r][0].angle_deg) };
 
-        Transport::Status ds_per[1];
+        MotorStatusEx ds_per[1];
         const auto ds = g.dispatch_all(rounds[r], ds_per);
-        if (ds != Transport::Status::OK) {
-            std::fprintf(stderr, "round %d dispatch failed\n", r);
+        if (ds != MotorStatusEx::OK && ds != MotorStatusEx::LimitWarned) {
+            std::fprintf(stderr, "round %d dispatch failed (status=%d, motor[0]=%d)\n",
+                         r, static_cast<int>(ds), static_cast<int>(ds_per[0]));
             return 4;
         }
 

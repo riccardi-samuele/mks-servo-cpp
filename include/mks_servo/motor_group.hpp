@@ -98,10 +98,26 @@ public:
     // directly via operator[].
     //
     // specs must point to at least size() MoveSpec entries.
-    // Per-motor results go into out_per_motor if non-null.
-    Transport::Status dispatch_all(const MoveSpec*    specs,
-                                   Transport::Status* out_per_motor = nullptr) noexcept {
-        Transport::Status worst = Transport::Status::OK;
+    //
+    // Per-motor results land in out_per_motor if non-null (caller-allocated
+    // buffer of at least size() elements). The per-motor entry carries the
+    // full Motor::write outcome — TransportError, ParseError, NotEnabled
+    // (firmware ack=0x00, typically refused due to power / coil state /
+    // stall latch), LimitExceeded, LimitWarned — rather than collapsing
+    // everything to a single Transport-level status. This matters: a
+    // firmware-refused MOVE is silently broken if not caught here, since
+    // wait_all_settled would then time out polling a motor that never
+    // received its command.
+    //
+    // Return value is the worst non-OK status seen across motors, or OK
+    // (resp. LimitWarned) when every motor accepted the dispatch.
+    // LimitWarned is treated as a success for the aggregate but still
+    // surfaces per-motor for the caller. The loop always runs to
+    // completion — a failure on motor[i] does not stop motor[i+1] from
+    // being dispatched (best-effort, mirrors enable_all's policy).
+    MotorStatusEx dispatch_all(const MoveSpec* specs,
+                               MotorStatusEx*  out_per_motor = nullptr) noexcept {
+        MotorStatusEx worst = MotorStatusEx::OK;
         for (std::size_t i = 0; i < motors_.size(); ++i) {
             // Use the ack-reading Motor::write with blocking=false: it
             // does policy checks AND consumes the start ack, but doesn't
@@ -109,12 +125,11 @@ public:
             const auto r = motors_[i]->write(specs[i].angle_deg,
                                              specs[i].params,
                                              /*blocking=*/false);
-            const Transport::Status s = (r.status == MotorStatusEx::TransportError)
-                ? Transport::Status::ReadFailed
-                : Transport::Status::OK;
-            if (out_per_motor) out_per_motor[i] = s;
-            if (s != Transport::Status::OK && worst == Transport::Status::OK) {
-                worst = s;
+            if (out_per_motor) out_per_motor[i] = r.status;
+            if (worst == MotorStatusEx::OK
+                && r.status != MotorStatusEx::OK
+                && r.status != MotorStatusEx::LimitWarned) {
+                worst = r.status;
             }
         }
         return worst;
@@ -205,6 +220,17 @@ public:
     // that motor's own Mechanical config (gear_ratio + origin_offset), so
     // motors with different mechanical setups in the same group work
     // transparently.
+    //
+    // Failure semantics: if dispatch_all surfaces ANY non-OK status (a
+    // motor's firmware refused the MOVE, transport timed out, soft-limit
+    // rejected, …) move_all returns immediately with that status — it
+    // does NOT call wait_all_settled. This is fail-fast: knowing the
+    // group is broken in ~ms beats waiting the full timeout for a motor
+    // that never received its command. CAVEAT: the motors that DID
+    // dispatch successfully are still physically executing their moves
+    // when move_all returns; the caller owns the recovery (e.g. issue
+    // emergency_stop on every motor, or wait_all_settled separately on
+    // the subset that dispatched OK).
     MotorStatusEx move_all(const MoveSpec* specs,
                            std::int32_t   tolerance_counts = 32,
                            std::uint64_t  timeout_us = 5'000'000,
@@ -216,14 +242,14 @@ public:
         for (std::size_t i = 0; i < n; ++i) {
             targets[i] = motors_[i]->angle_to_counts(specs[i].angle_deg);
         }
-        const auto ds = dispatch_all(specs);
-        if (ds != Transport::Status::OK) {
-            if (out_per_motor) {
-                for (std::size_t i = 0; i < n; ++i) {
-                    out_per_motor[i] = MotorStatusEx::TransportError;
-                }
-            }
-            return MotorStatusEx::TransportError;
+        // Pass out_per_motor through so dispatch_all populates per-motor
+        // status accurately. If dispatch fails on any motor, keep what
+        // dispatch_all wrote — don't clobber with a uniform error status,
+        // since some motors may have dispatched OK and that fidelity
+        // matters to the caller.
+        const auto ds = dispatch_all(specs, out_per_motor);
+        if (ds != MotorStatusEx::OK && ds != MotorStatusEx::LimitWarned) {
+            return ds;
         }
         return wait_all_settled(targets.data(),
                                 tolerance_counts,
