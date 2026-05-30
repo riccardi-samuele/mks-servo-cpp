@@ -23,10 +23,14 @@
 // thermal/electrical headroom.
 //
 // Stable identification: on a multi-adapter rig, the OS-assigned
-// /dev/ttyUSBn order is NOT stable across reboots / hot-plug. Use
-// /dev/serial/by-id/usb-FTDI_FT232R_USB_UART_<SERIAL>-if00-port0 (when
-// the adapter exposes a serial number) or /dev/serial/by-path/...
-// (always available, keyed on the physical USB port). Pass these
+// /dev/ttyUSBn order is NOT stable across reboots / hot-plug. Two
+// stable schemes exist under /dev/serial/:
+//   - by-id/usb-FTDI_FT232R_USB_UART_<SERIAL>-if00-port0
+//   - by-path/pci-...-usb-0:<PORT>:1.0-port0
+// PREFER by-path: many low-cost FTDI clones ship with the SAME factory
+// serial number (e.g. "A5069RR4") across units, so by-id can collide
+// and silently point to "one of them" non-deterministically. by-path
+// is keyed on the physical USB port and is always unique. Pass these
 // stable paths as argv to make "motor A = bus X" deterministic.
 //
 // Usage:
