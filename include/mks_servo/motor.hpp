@@ -333,15 +333,29 @@ public:
     // MOVE_ABS_AXIS targets are interpreted in the firmware's reference
     // frame — not the encoder accumulation register.
     //
-    // After this call, origin_offset_counts is also reset to 0 so the
-    // software-side math agrees with the firmware.
+    // After this call, the encoder addition value at this moment becomes
+    // the new lib-side origin: m.read() will return ~0, and subsequent
+    // counts_to_angle conversions are relative to that point. This matters
+    // because SET_ZERO_POINT resets the FIRMWARE'S axis position, but
+    // the encoder accumulation register (the one read_encoder_addition
+    // reports) is NEVER reset by SET_ZERO_POINT — it keeps growing
+    // monotonically from power-on. If we left the lib-side offset at 0
+    // after a SET_ZERO_POINT that follows e.g. a long MOVE_SPEED rotation,
+    // the two frames would diverge: m.read() would return a huge cumulative
+    // angle while MOVE_ABS_AXIS targets would refer to a freshly-zeroed
+    // axis. write(angle) would then compute angle_to_counts(read()+delta)
+    // and dispatch nonsensical absolute targets. Capturing the encoder
+    // here keeps everything consistent.
     //
     // The MKS firmware needs ~200 ms of settling time around flash writes
-    // (matches the Python reference's handling). We sleep both before and
-    // after the SET_ZERO_POINT call so subsequent commands don't race.
+    // (matches the Python reference's handling). We sleep before, then
+    // read the encoder post-write to capture the new origin.
     //
-    // Use set_origin_soft() if you only want to shift the in-software
-    // zero without touching firmware (rare; mostly for tests).
+    // Caveat: origin_offset_counts is int32; if your application accumulates
+    // more than ~130'000 motor revolutions without calling set_origin again
+    // it will wrap. Call set_origin periodically in long-running rotational
+    // applications, or use set_origin_soft if you only need a lib-side
+    // origin shift without touching flash.
     MResult<bool> set_origin() noexcept {
         MResult<bool> out;
         sleep_us(200'000);
@@ -361,8 +375,17 @@ public:
             out.status = MotorStatusEx::NotEnabled;
             return out;
         }
-        mech_.origin_offset_counts = 0;
         sleep_us(200'000);
+        // Capture the encoder reading post-SET_ZERO_POINT so the lib's
+        // user frame is anchored at the moment of zeroing. If the read
+        // fails we fall back to offset=0 (old behavior) — caller can
+        // detect by checking m.read() after set_origin.
+        auto e = raw_.read_encoder_addition();
+        if (e.ok()) {
+            mech_.origin_offset_counts = static_cast<std::int32_t>(e.value);
+        } else {
+            mech_.origin_offset_counts = 0;
+        }
         out.value = true;
         return out;
     }

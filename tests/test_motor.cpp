@@ -258,29 +258,83 @@ TEST_CASE("Motor::read returns angle in degrees from encoder counts") {
 }
 
 // ─── set_origin (hard) ─────────────────────────────────────────────
-TEST_CASE("Motor::set_origin sends SET_ZERO_POINT and resets offset to 0") {
+TEST_CASE("Motor::set_origin sends SET_ZERO_POINT and anchors offset to "
+          "current encoder reading") {
     auto p = make_paired_transport();
     RawDriver d(p.transport, 0x01, 100'000);
     Motor m(d, {/*gear=*/1.0, /*offset=*/9999});  // preload a nonzero offset
 
+    constexpr std::int64_t ENC_AT_ZERO = 7'654'321;  // simulated post-MOVE_SPEED encoder
+
     std::thread t([&] {
+        // 1) SET_ZERO_POINT request
         auto req = read_n(p.peer_fd, 4);
         REQUIRE(req.size() == 4);
         CHECK(req[2] == 0x92);  // SET_ZERO_POINT
-
-        // Send success ack: FB 01 92 01 CRC
         std::uint8_t body[] = {0xFB, 0x01, 0x92, 0x01};
-        std::uint8_t crc = mks_servo::checksum8(body, 4);
         std::uint8_t frame[5];
         std::memcpy(frame, body, 4);
-        frame[4] = crc;
+        frame[4] = mks_servo::checksum8(body, 4);
         mock_write(p.peer_fd, frame, 5);
+
+        // 2) read_encoder_addition request (lib captures the new origin)
+        auto req2 = read_n(p.peer_fd, 4);
+        REQUIRE(req2.size() == 4);
+        CHECK(req2[2] == 0x31);  // READ_ENCODER_ADDITION
+        auto resp = make_encoder_response(ENC_AT_ZERO);
+        mock_write(p.peer_fd, resp.data(), resp.size());
     });
 
     auto origin = m.set_origin();
     t.join();
     REQUIRE(origin.ok());
-    CHECK(m.mechanical().origin_offset_counts == 0);  // reset
+    // Offset is now anchored to the encoder reading at the zero point,
+    // not blindly reset to 0 — that's how m.read() can return ~0 even
+    // when encoder_addition is huge from prior MOVE_SPEED rotations.
+    CHECK(m.mechanical().origin_offset_counts == static_cast<std::int32_t>(ENC_AT_ZERO));
+
+    ::close(p.peer_fd);
+}
+
+// Regression test for the frame-mismatch bug discovered HIL via hil_envelope:
+// after a long MOVE_SPEED rotation, the encoder_addition register holds a
+// huge cumulative value (firmware never resets it). The old set_origin
+// silently set the lib offset to 0, so m.read() returned a huge angle and
+// any subsequent angle_to_counts(read()+delta) dispatched nonsense
+// MOVE_ABS_AXIS targets. With the fix, m.read() returns ~0 right after
+// set_origin regardless of how large encoder_addition is.
+TEST_CASE("Motor::set_origin -> read() returns ~0 even with huge prior encoder") {
+    auto p = make_paired_transport();
+    RawDriver d(p.transport, 0x01, 100'000);
+    Motor m(d, {/*gear=*/1.0, /*offset=*/0});
+
+    constexpr std::int64_t HUGE_ENC = 12'345'678;  // ~754 motor revs accumulated
+
+    std::thread t([&] {
+        // set_origin sends SET_ZERO_POINT
+        (void)read_n(p.peer_fd, 4);
+        std::uint8_t body[] = {0xFB, 0x01, 0x92, 0x01};
+        std::uint8_t frame[5];
+        std::memcpy(frame, body, 4);
+        frame[4] = mks_servo::checksum8(body, 4);
+        mock_write(p.peer_fd, frame, 5);
+
+        // then reads encoder (the new behavior)
+        (void)read_n(p.peer_fd, 4);
+        auto resp1 = make_encoder_response(HUGE_ENC);
+        mock_write(p.peer_fd, resp1.data(), resp1.size());
+
+        // user-side m.read() — encoder hasn't moved since
+        (void)read_n(p.peer_fd, 4);
+        auto resp2 = make_encoder_response(HUGE_ENC);
+        mock_write(p.peer_fd, resp2.data(), resp2.size());
+    });
+
+    REQUIRE(m.set_origin().ok());
+    auto angle = m.read();
+    t.join();
+    REQUIRE(angle.ok());
+    CHECK(angle.value == doctest::Approx(0.0).epsilon(0.001));
 
     ::close(p.peer_fd);
 }

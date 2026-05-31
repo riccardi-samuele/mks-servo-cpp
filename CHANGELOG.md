@@ -43,6 +43,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   (3.7× faster, same code) — HIL-measured on NEMA17 42mm at 24V.
 
 ### Fixed
+- `Motor::set_origin` now anchors `origin_offset_counts` to the encoder
+  reading captured immediately after SET_ZERO_POINT, instead of blindly
+  resetting it to 0. The encoder addition register is NEVER reset by
+  SET_ZERO_POINT on the firmware variants tested — it keeps accumulating
+  from power-on. The old behavior left `m.read()` returning a huge
+  cumulative angle right after set_origin, breaking any subsequent
+  `m.write(angle)` (which dispatched MOVE_ABS_AXIS targets computed
+  from the wrong frame). The fix is a one-line change in the hot path
+  (an extra encoder read post-SET_ZERO_POINT) and HIL-validated:
+  m.read() returns ~0 even when prior MOVE_REL_AXIS has accumulated
+  millions of encoder counts. New mock regression test added.
 - `MotorGroup::dispatch_all` no longer silently masks firmware refusals.
   Previously only `MotorStatusEx::TransportError` was surfaced; firmware
   ack `0x00` (`NotEnabled`, e.g. stall-protection latched or coil driver
