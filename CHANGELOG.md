@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- `docs/setup_guide.md` — user-facing setup guide answering "12 V or
+  24 V?" and "what work_current?". Includes HIL-measured comparison
+  tables across three PSUs (12V wall-wart, 12V lab, 24V lab) and a
+  quick-pick table for common scenarios. Captures the non-obvious
+  finding that the firmware default work_current=1600 mA caps the
+  motor at ~1800 RPM at 24V — raising it to 2000 mA unlocks the full
+  3000 RPM firmware-spec cap.
+- `examples/hil_voltage_setup.cpp` — tuning helper that sweeps
+  work_current candidates (1000-3000 mA) at the current supply
+  voltage, runs a high-RPM probe at each, and recommends the lowest
+  work_current that reaches the firmware-spec 3000 RPM cap. Restores
+  the factory default (1600 mA) at the end. Runtime ~1-2 minutes.
 - `Motor::firmware_target_for(angle)` and `Motor::encoder_target_for(angle)`
   — public conversion methods that explicitly split the two coordinate
   frames that the existing `angle_to_counts` conflated. Internal lib
