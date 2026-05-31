@@ -62,14 +62,23 @@ Raising `work_current` to 2000 mA unlocks the full firmware-spec
 3000 RPM cap at 24 V. Going above 2000 mA gives no further benefit at
 no load — you've hit the firmware cap, not the motor cap.
 
-HIL-measured at 24 V (NEMA17 42mm unloaded):
+HIL-measured at 24 V (NEMA17 42mm unloaded, work_current set EXPLICITLY
+via `set_work_current_ma()`):
 
 | work_current | max steady RPM | tracking at cmd=3000 |
 |---|---|---|
-| 1600 mA (default) | **1838** | 0.612 (saturated) |
-| 2000 mA | **3022** | **1.007** (perfect) |
-| 2500 mA | 3022 | 1.007 |
-| 3000 mA | 3022 | 1.007 |
+| 1000 mA | 1190 | 0.40 (saturated) |
+| 1600 mA (manufacturer's nominal default) | **2385** | 0.80 (saturated) |
+| 2000 mA | **3175** | **1.06** (reaches firmware cap) |
+| 2500 mA | 3174 | 1.06 (no extra gain) |
+| 3000 mA | (no extra gain) | (no extra gain) |
+
+> ⚠️ Some boards ship with a factory setting BELOW the nominal 1600 mA
+> default. We've observed first-boot behavior capping at ~1840 RPM
+> instead of the 2385 above, which means the actual factory value was
+> lower than spec on that unit. Always call `set_work_current_ma()`
+> explicitly before benchmarking or running production code — don't
+> trust the implicit factory value.
 
 > ⚠️ Thermal note: at 2500-3000 mA the motor coils dissipate more I²R
 > heat (a NEMA17 with 2 Ω/phase × 2 phases × 3 A² ≈ 36 W when both
@@ -90,8 +99,9 @@ All three setups, same motor, same library, same `examples/hil_envelope`:
 | 90° @ acc=128 | 412 ms | 415 ms | 420 ms |
 | 90° @ acc=64 | 467 ms | 474 ms | 479 ms |
 | 90° @ acc=16 | 500 ms | 503 ms | 506 ms |
-| max steady RPM (default 1600 mA) | 2346 | 2391 | **1838** |
-| max steady RPM (2000+ mA) | (same physics) | (same physics) | **3022** |
+| max steady RPM (factory implicit) | 2346 | 2391 | 1838 (board shipped < 1600 mA) |
+| max steady RPM (EXPLICIT 1600 mA) | (same) | (same) | **2385** |
+| max steady RPM (EXPLICIT 2000+ mA) | (same physics) | (same physics) | **3175** |
 | overshoot peak @ acc=255 | +4.86° | +4.33° | +2.24° |
 | soak 100× | 99/100 | 99/100 | 99/100 |
 | settle drain mean | 9.96 ms | 11.46 ms | 13.74 ms |
