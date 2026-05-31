@@ -132,6 +132,52 @@ public:
     void clear_speed_limit() noexcept { spd_lim_.enabled = false; }
 
     // ─── Conversions ───────────────────────────────────────────
+    //
+    // Two frames coexist after a SET_ZERO_POINT-based set_origin:
+    //
+    //  - The ENCODER FRAME: read_encoder_addition() returns a cumulative
+    //    count that is NEVER reset by SET_ZERO_POINT. set_origin captures
+    //    the encoder value at the moment of zeroing and stores it in
+    //    mech_.origin_offset_counts; counts_to_angle subtracts it so
+    //    m.read() returns 0 right after set_origin.
+    //
+    //  - The FIRMWARE FRAME: MOVE_ABS_AXIS targets are interpreted relative
+    //    to the firmware's internal axis position, which SET_ZERO_POINT
+    //    DOES reset to 0. So MOVE_ABS_AXIS(N) means "move to axis position
+    //    N", where N=0 is wherever set_origin was called from.
+    //
+    // For a "move to angle X" operation we need:
+    //   firmware_target_for(X) — what to send to MOVE_ABS_AXIS
+    //   encoder_target_for(X)  — what the encoder will read when we get there
+    // These differ by exactly mech_.origin_offset_counts.
+    //
+    // angle_to_counts / counts_to_angle below are inverses in the encoder
+    // frame; they are kept for back-compat and diagnostics. Internal code
+    // (Motor::write, dispatch_write, MotorGroup) uses firmware_target_for /
+    // encoder_target_for explicitly to avoid frame ambiguity.
+
+    // Counts to send to MOVE_ABS_AXIS for the requested angle. Independent
+    // of origin_offset_counts because the firmware axis was zeroed by
+    // set_origin and the angle is interpreted relative to that zero.
+    std::int32_t firmware_target_for(double angle_deg) const noexcept {
+        const double motor_deg = angle_deg * mech_.gear_ratio;
+        const double counts    = motor_deg * ENCODER_COUNTS_PER_REV / 360.0;
+        return static_cast<std::int32_t>(counts >= 0 ? counts + 0.5 : counts - 0.5);
+    }
+
+    // Expected encoder_addition reading when the motor reaches the
+    // requested angle. Equals firmware_target_for(angle_deg) plus the
+    // origin_offset_counts captured at set_origin time.
+    std::int32_t encoder_target_for(double angle_deg) const noexcept {
+        const std::int64_t target = static_cast<std::int64_t>(firmware_target_for(angle_deg))
+                                  + static_cast<std::int64_t>(mech_.origin_offset_counts);
+        return static_cast<std::int32_t>(target);
+    }
+
+    // Legacy: encoder-frame counts inverse of counts_to_angle. Kept so
+    // existing user code that calls it directly keeps working. For
+    // dispatching MOVE_ABS_AXIS, callers should use firmware_target_for
+    // instead — angle_to_counts will produce wrong targets when offset != 0.
     std::int32_t angle_to_counts(double angle_deg) const noexcept {
         const double motor_deg = angle_deg * mech_.gear_ratio;
         const double counts    = motor_deg * ENCODER_COUNTS_PER_REV / 360.0;
@@ -184,7 +230,14 @@ public:
             return out;
         }
 
-        const std::int32_t target_counts = angle_to_counts(angle_deg);
+        // Two targets — different frames. firmware_target is what
+        // MOVE_ABS_AXIS understands (firmware axis position, zeroed by
+        // SET_ZERO_POINT). encoder_target is what wait_for_position
+        // compares against (encoder_addition, NOT reset by SET_ZERO_POINT).
+        // They differ by origin_offset_counts; mixing them up after a
+        // set_origin produces huge unintended moves.
+        const std::int32_t firmware_target = firmware_target_for(angle_deg);
+        const std::int32_t encoder_target  = encoder_target_for(angle_deg);
         // Use the ack-waiting MOVE: it reads the firmware's "started"
         // response (the 1st of two it emits per move). This leaves only
         // the "complete" response in the bus buffer, which drain_input on
@@ -193,7 +246,7 @@ public:
         // loop occasionally exceeds its byte budget under timing noise.
         // Users who need maximum dispatch speed can call dispatch_write()
         // and manage the bus state themselves.
-        auto r = raw_.move_absolute_axis(target_counts, rpm, mp.acc);
+        auto r = raw_.move_absolute_axis(firmware_target, rpm, mp.acc);
         if (!r.ok()) {
             out.status = (r.t_status != Transport::Status::OK)
                 ? MotorStatusEx::TransportError
@@ -205,7 +258,7 @@ public:
             // recover by clearing the latch and re-issuing the MOVE.
             (void)raw_.release_protection();
             sleep_us(200'000);
-            r = raw_.move_absolute_axis(target_counts, rpm, mp.acc);
+            r = raw_.move_absolute_axis(firmware_target, rpm, mp.acc);
             if (!r.ok()) {
                 out.status = (r.t_status != Transport::Status::OK)
                     ? MotorStatusEx::TransportError
@@ -219,7 +272,7 @@ public:
         }
 
         if (blocking) {
-            const auto wait_status = wait_for_position(target_counts,
+            const auto wait_status = wait_for_position(encoder_target,
                                                        tolerance_counts,
                                                        timeout_us);
             if (wait_status != MotorStatusEx::OK) {
@@ -250,8 +303,8 @@ public:
             && spd_lim_.policy == OnViolation::Clamp) {
             rpm = spd_lim_.max_rpm;
         }
-        const std::int32_t counts = angle_to_counts(angle_deg);
-        return raw_.dispatch_move_absolute_axis(counts, rpm, mp.acc);
+        const std::int32_t firmware_target = firmware_target_for(angle_deg);
+        return raw_.dispatch_move_absolute_axis(firmware_target, rpm, mp.acc);
     }
 
     MResult<double> read() noexcept {

@@ -8,6 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- `Motor::firmware_target_for(angle)` and `Motor::encoder_target_for(angle)`
+  — public conversion methods that explicitly split the two coordinate
+  frames that the existing `angle_to_counts` conflated. Internal lib
+  code (`Motor::write`, `dispatch_write`, `MotorGroup::move_all`) now
+  uses these to send the correct MOVE_ABS_AXIS target AND poll the
+  correct encoder reading in `wait_for_position`. See the `Conversions`
+  doc block in `motor.hpp` for the full rationale.
+- `save_envelope` / `load_envelope` / `auto_calibrate_cached` in
+  `envelope.hpp` — binary persistence (magic + version + struct
+  bytes; ~80 bytes/file) and a cache-friendly wrapper that loads
+  from disk + does a cheap comms-only sanity probe (~50 ms) and
+  falls through to a full `auto_calibrate` only on a real cache
+  miss. HIL: cache-hit second-run total time drops from ~3 seconds
+  to ~1.3 s (mostly baud-probe and enable, not the calibration
+  itself).
 - `mks_servo/envelope.hpp` — `Envelope` struct + `auto_calibrate(Motor&)`
   function. ~3-6 s self-characterisation that discovers the safe-fast
   operating point of the motor + supply + load and returns a plain-
@@ -59,6 +74,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   (3.7× faster, same code) — HIL-measured on NEMA17 42mm at 24V.
 
 ### Fixed
+- `Motor::write`/`dispatch_write` and `MotorGroup::move_all` now use
+  separate firmware-frame and encoder-frame targets. Previously a
+  single `angle_to_counts(angle_deg)` value was passed both as the
+  MOVE_ABS_AXIS target (firmware frame, reset to 0 by SET_ZERO_POINT)
+  AND as the `wait_for_position` reference (encoder frame, NOT reset
+  by SET_ZERO_POINT). The two frames differ by the origin_offset_counts
+  captured at set_origin time — a value that is large after any
+  preceding MOVE_SPEED rotation. Symptom on HIL: a 90° move
+  immediately after `auto_calibrate_cached` (whose RPM probe used to
+  rotate the motor for ~3 s) ran the motor for ~6 revolutions in the
+  wrong direction before timing out. The fix wires the two frames
+  through the right targets via the new `firmware_target_for` /
+  `encoder_target_for` methods. Public `angle_to_counts` is unchanged
+  for back-compat with user code that calls it directly (it's the
+  encoder-frame value — useful for diagnostics, not for dispatch).
 - `Motor::wait_for_position` now tolerates up to 2 consecutive isolated
   encoder-read failures before propagating an error. Back-to-back
   polling at 256 k baud (the new default) occasionally races with a

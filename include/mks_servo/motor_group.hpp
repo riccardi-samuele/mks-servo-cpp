@@ -240,7 +240,12 @@ public:
         const std::size_t n = motors_.size();
         std::vector<std::int32_t> targets(n);
         for (std::size_t i = 0; i < n; ++i) {
-            targets[i] = motors_[i]->angle_to_counts(specs[i].angle_deg);
+            // wait_all_settled compares against encoder_addition (encoder
+            // frame), so the target must include the per-motor origin
+            // offset captured by set_origin. The MOVE_ABS_AXIS dispatched
+            // by dispatch_all uses firmware_target_for internally via
+            // Motor::write, which strips the offset for the firmware frame.
+            targets[i] = motors_[i]->encoder_target_for(specs[i].angle_deg);
         }
         // Pass out_per_motor through so dispatch_all populates per-motor
         // status accurately. If dispatch fails on any motor, keep what

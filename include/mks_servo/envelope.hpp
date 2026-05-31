@@ -35,6 +35,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
+#include <cstring>
 #include <ctime>
 #include <vector>
 
@@ -327,6 +329,118 @@ inline Envelope auto_calibrate(Motor& m) noexcept {
 
     env.valid = true;
     return env;
+}
+
+// ─── persistence ────────────────────────────────────────────────────
+//
+// Binary, fixed-layout format — no JSON parser, no version drift
+// games. The Envelope struct itself is POD, so we just write the
+// magic + version + sizeof + raw bytes.
+//
+// Why binary: the file is a CACHE, not a config. Users don't edit it
+// by hand; the lib writes and reads it. Plain bytes mean
+// load_envelope can validate the file in 4 ifs, no parser.
+
+constexpr std::uint32_t ENVELOPE_MAGIC   = 0x4D4B4543;  // "MKEC" little-endian
+constexpr std::uint32_t ENVELOPE_VERSION = 1;
+
+struct EnvelopeFileHeader {
+    std::uint32_t magic;
+    std::uint32_t version;
+    std::uint32_t struct_bytes;  // sizeof(Envelope) at write time
+    std::uint32_t reserved;
+};
+
+// Write `env` to `path` in binary form. Returns true on success.
+// Overwrites the file if it exists. Safe to call with any Envelope
+// (including {valid=false}) — the caller decides whether persisting
+// a bad result is useful.
+inline bool save_envelope(const Envelope& env, const char* path) noexcept {
+    std::FILE* f = std::fopen(path, "wb");
+    if (!f) return false;
+    EnvelopeFileHeader h{
+        ENVELOPE_MAGIC,
+        ENVELOPE_VERSION,
+        static_cast<std::uint32_t>(sizeof(Envelope)),
+        0,
+    };
+    bool ok = std::fwrite(&h, sizeof(h), 1, f) == 1
+           && std::fwrite(&env, sizeof(env), 1, f) == 1;
+    std::fclose(f);
+    return ok;
+}
+
+// Load an Envelope previously written by save_envelope. Returns
+// Envelope{valid=false} on any failure (missing file, wrong magic,
+// version mismatch, size mismatch, short read). The caller should
+// re-run auto_calibrate in that case.
+inline Envelope load_envelope(const char* path) noexcept {
+    Envelope env;
+    std::FILE* f = std::fopen(path, "rb");
+    if (!f) return env;
+    EnvelopeFileHeader h{};
+    if (std::fread(&h, sizeof(h), 1, f) != 1) { std::fclose(f); return env; }
+    if (h.magic        != ENVELOPE_MAGIC)        { std::fclose(f); return env; }
+    if (h.version      != ENVELOPE_VERSION)      { std::fclose(f); return env; }
+    if (h.struct_bytes != sizeof(Envelope))      { std::fclose(f); return env; }
+    if (std::fread(&env, sizeof(env), 1, f) != 1) {
+        // Partial read — re-default-init to be safe and mark invalid.
+        env = Envelope{};
+        std::fclose(f);
+        return env;
+    }
+    std::fclose(f);
+    return env;
+}
+
+// Cache-friendly helper: load envelope from `path` and run a quick
+// sanity probe to confirm the motor is still reachable. If yes, return
+// the cached envelope (instant, ~50 ms). Otherwise run a full
+// auto_calibrate, save the result, and return it.
+//
+// Validation: ONLY comms latency, not motion. A MOVE_SPEED-based
+// recalibration probe would rotate the motor for several seconds (a
+// non-instant cache that no one wants), AND leave the firmware in a
+// state where SET_ZERO_POINT misbehaves immediately after — every
+// downstream m.write would have a small window of unreliable behavior.
+// If your setup (load, supply, motor) changes between runs, the new
+// behavior will show up as overshoot or stalls; force a fresh
+// calibration by calling auto_calibrate(m) directly (or remove the
+// cache file).
+//
+// Returns Envelope{valid=false} only if both load AND fresh
+// auto_calibrate fail.
+inline Envelope auto_calibrate_cached(Motor& m, const char* path) noexcept {
+    Envelope cached = load_envelope(path);
+    if (cached.valid) {
+        auto& raw = m.raw();
+        // Cheap comms-only validation. ~50ms total.
+        std::vector<double> us;
+        us.reserve(50);
+        for (int i = 0; i < 50; ++i) {
+            const std::uint64_t t0 = detail::ec_now_us();
+            auto e = raw.read_encoder_addition();
+            const std::uint64_t t1 = detail::ec_now_us();
+            if (e.ok()) us.push_back(static_cast<double>(t1 - t0));
+        }
+        if (us.empty()) {
+            // Motor unreachable now; cached data is useless either way.
+            cached.valid = false;
+            return cached;
+        }
+        std::sort(us.begin(), us.end());
+        const double p99_now = us[us.size() * 99 / 100];
+        const bool comms_ok = p99_now < 1.5 * cached.comms_latency_us_p99;
+
+        if (comms_ok) {
+            return cached;  // cache hit — instant
+        }
+    }
+
+    // Cache miss / stale / first run: full calibration.
+    Envelope fresh = auto_calibrate(m);
+    if (fresh.valid) (void)save_envelope(fresh, path);
+    return fresh;
 }
 
 }  // namespace mks_servo

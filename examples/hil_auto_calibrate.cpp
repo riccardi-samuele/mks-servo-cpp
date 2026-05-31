@@ -23,6 +23,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <ctime>
 
 #include "mks_servo/envelope.hpp"
@@ -96,10 +97,27 @@ int main(int argc, char** argv) {
         return 4;
     }
 
-    std::printf("=== auto_calibrate (this takes ~3-6 s)...\n");
+    // Use the cached form by default — instant on the 2nd+ run if the
+    // setup hasn't changed materially. Pass --no-cache to force a
+    // fresh calibration (useful when you've changed motor/supply/load).
+    bool use_cache = true;
+    for (int i = 1; i < argc; ++i) {
+        if (std::strcmp(argv[i], "--no-cache") == 0) use_cache = false;
+    }
+    const char* cache_path = "/tmp/mks_envelope_cache.bin";
+
+    std::printf("=== auto_calibrate%s (this takes ~3-6 s on first run, "
+                "instant on subsequent runs if cached)...\n",
+                use_cache ? "_cached" : " (forced)");
     std::fflush(stdout);
 
-    Envelope env = auto_calibrate(m);
+    Envelope env = use_cache ? mks_servo::auto_calibrate_cached(m, cache_path)
+                             : auto_calibrate(m);
+    if (env.valid && use_cache) {
+        // Save (no-op if auto_calibrate_cached already wrote it from a fresh
+        // calibration; idempotent if it loaded a valid cache).
+        mks_servo::save_envelope(env, cache_path);
+    }
 
     std::printf("\n=== ENVELOPE DISCOVERED ===\n");
     std::printf("valid:                 %s\n", env.valid ? "yes" : "NO");
