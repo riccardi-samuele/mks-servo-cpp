@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- `examples/hil_envelope.cpp` — end-to-end operating-envelope
+  characterisation. Six tests (comms latency, 90° vs acceleration,
+  90° vs commanded RPM, overshoot, soak, max steady RPM) report what
+  THIS motor + supply + load can actually deliver, with explicit
+  validity criteria per test. Optional `--json <path>` produces a
+  machine-readable report intended as the input for the planned
+  `Motor::auto_calibrate()` / `Envelope` API. Distinct from
+  `characterize` (servo quality — precision, follow error) — this
+  measures the operating envelope (how fast / how reliably).
+  Validated on NEMA17 42mm at 24V/10A: 40.66±0.02ms per 90° at
+  acc=255 rpm=2000, max steady RPM 1856, 99/100 soak success.
+
 ### Fixed
 - `MotorGroup::dispatch_all` no longer silently masks firmware refusals.
   Previously only `MotorStatusEx::TransportError` was surfaced; firmware
