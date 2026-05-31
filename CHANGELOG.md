@@ -20,6 +20,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   Validated on NEMA17 42mm at 24V/10A: 40.66±0.02ms per 90° at
   acc=255 rpm=2000, max steady RPM 1856, 99/100 soak success.
 
+### Changed
+- `Motor::write`/`move_relative`/`move_relative_shortest` default
+  `tolerance_counts` 16 → 50 (~0.35° → ~1.1°). HIL-validated: with
+  the old tight default, a user calling `m.write(angle,
+  MoveParams{2000, 255})` had 14/20 timeouts because the firmware's
+  transient overshoot at max acceleration (~3.5° peak) couldn't
+  settle within 0.35° fast enough; the new default produces 20/20 ok
+  in ~56 ms per 90° move. Same value the Python reference and our
+  bench_quarter_turn use. Pass a tighter tolerance explicitly when
+  you've verified your load doesn't overshoot that much.
+- `Motor::wait_for_position` defaults:
+  - `poll_interval_us` 50'000 → 0 (back-to-back at 256k baud is safe
+    — each encoder transact is ~1 ms — and the old 50 ms gap meant
+    `m.write` blocking spent up to 50 ms idle between polls). Users
+    on 38 400 baud should pass ≥5 000 explicitly.
+  - `settle_drain_ms` 20 → 15 (HIL-measured worst-case "complete" ack
+    arrival is ~15.6 ms post-window; 15 ms covers it without the
+    spare 5 ms the old default wasted on every move).
+  Combined impact on a 90° move via `Motor::write(angle,
+  MoveParams{2000, 255})` blocking with defaults: 205 ms → 56 ms
+  (3.7× faster, same code) — HIL-measured on NEMA17 42mm at 24V.
+
 ### Fixed
 - `MotorGroup::dispatch_all` no longer silently masks firmware refusals.
   Previously only `MotorStatusEx::TransportError` was surfaced; firmware

@@ -155,10 +155,17 @@ public:
     // Polling uses read_encoder_addition (safe during motion) — never
     // read_motor_status or read_speed_rpm (which sabotage closed-loop moves
     // when polled aggressively; see HIL findings in benchmark-mks-baseline).
+    //
+    // Default tolerance_counts=50 (~1.1°) matches the Python reference
+    // and absorbs the firmware's transient overshoot at max acceleration
+    // (HIL-measured ~3.5° peak at acc=255 before closed-loop convergence).
+    // Tighter values like 16 (~0.35°) cause Motor::write blocking to wait
+    // for full settle and time out for many users; pass a tighter value
+    // explicitly only when you've verified the load + acc don't overshoot.
     MResult<bool> write(double         angle_deg,
                         MoveParams     mp                  = {},
                         bool           blocking            = true,
-                        std::int32_t   tolerance_counts    = 16,   // ~0.35°
+                        std::int32_t   tolerance_counts    = 50,   // ~1.1°
                         std::uint64_t  timeout_us          = 5'000'000) noexcept {
         MResult<bool> out;
 
@@ -279,7 +286,7 @@ public:
     MResult<bool> move_relative(double delta_deg,
                                 MoveParams mp = {},
                                 bool blocking = true,
-                                std::int32_t tolerance_counts = 16,
+                                std::int32_t tolerance_counts = 50,
                                 std::uint64_t timeout_us = 5'000'000) noexcept {
         const auto current = read();
         if (!current.ok()) {
@@ -307,7 +314,7 @@ public:
     MResult<bool> move_relative_shortest(double         delta_deg,
                                          MoveParams     mp                = {},
                                          bool           blocking          = true,
-                                         std::int32_t   tolerance_counts  = 16,
+                                         std::int32_t   tolerance_counts  = 50,
                                          std::uint64_t  timeout_us        = 5'000'000) noexcept {
         // Wrap to [-180, 180]. fmod handles signs, then we shift by 180,
         // mod again, and subtract 180 to land in the symmetric range.
@@ -392,22 +399,25 @@ public:
     // poll_interval_us throttles the gap between polls. There is no
     // universally-correct value — the right interval depends on the bus
     // baud rate (each encoder transact takes ~ FRAME_BYTES * 10 / baud
-    // seconds). For 256k baud, 0 (back-to-back) is optimal. For 38400 you
-    // need ≥5 ms to avoid saturating the firmware. The Motor default is
-    // conservative; benchmark callers should override.
+    // seconds). For 256k baud, 0 (back-to-back, ~1ms per poll) is both
+    // safe and optimal. For 38400 baud you need ≥5 ms to avoid saturating
+    // the firmware; users on default-baud setups should pass an explicit
+    // value. Default is 0 since the lib targets 256k operation.
     //
     // settle_drain_ms: after the target is reached, drain the bus for up
     // to this many ms to absorb any pending "complete" ack from the
-    // firmware. Defaults to 20 — necessary for chained MOVE_* calls to
-    // avoid the next move picking up the stray ack as its own response.
-    // Set to 0 if you'll handle drain yourself (e.g. high-frequency
-    // pipelined use).
+    // firmware. Default 15 ms is the empirically-measured ceiling for
+    // the firmware's late-ack on FTDI (latency_timer=16ms bimodal,
+    // worst-case ack at ~15.6 ms post-window). Chained MOVE_* calls
+    // need this to avoid the next move picking up the stray ack as its
+    // own response. Set to 0 if you'll handle drain yourself
+    // (e.g. high-frequency pipelined use).
     MotorStatusEx wait_for_position(std::int32_t   target_counts,
                                     std::int32_t   tolerance_counts,
                                     std::uint64_t  timeout_us,
                                     int            consecutive_in_window = 2,
-                                    std::uint64_t  poll_interval_us = 50'000,
-                                    int            settle_drain_ms = 20) noexcept {
+                                    std::uint64_t  poll_interval_us = 0,
+                                    int            settle_drain_ms = 15) noexcept {
         const std::uint64_t deadline = monotonic_us() + timeout_us;
         int in_window = 0;
         while (true) {
