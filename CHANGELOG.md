@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-05-31
+
 ### Added
 - `docs/setup_guide.md` — user-facing setup guide answering "12 V or
   24 V?" and "what work_current?". Includes HIL-measured comparison
