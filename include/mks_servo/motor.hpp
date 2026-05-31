@@ -443,13 +443,32 @@ public:
                                     int            settle_drain_ms = 15) noexcept {
         const std::uint64_t deadline = monotonic_us() + timeout_us;
         int in_window = 0;
+        // Tolerate up to 2 consecutive bus glitches before propagating —
+        // back-to-back encoder polling occasionally races with a stray
+        // "complete" ack frame from a previous move, which can produce a
+        // transient ReadFailed at the transport layer even though the
+        // motor itself is fine. A single failure was previously fatal,
+        // making Motor::write blocking flaky right after aggressive
+        // characterisation. The motor would land at target correctly but
+        // the lib would still report TransportError. With this counter,
+        // an isolated glitch is absorbed; a real bus failure (3+ in a row
+        // at ~1 ms apart) still surfaces immediately.
+        int consec_errors = 0;
+        constexpr int MAX_CONSEC_ERRORS = 2;
         while (true) {
             const auto r = raw_.read_encoder_addition();
             if (!r.ok()) {
-                return (r.t_status != Transport::Status::OK)
-                    ? MotorStatusEx::TransportError
-                    : MotorStatusEx::ParseError;
+                if (++consec_errors > MAX_CONSEC_ERRORS) {
+                    return (r.t_status != Transport::Status::OK)
+                        ? MotorStatusEx::TransportError
+                        : MotorStatusEx::ParseError;
+                }
+                if (monotonic_us() >= deadline) return MotorStatusEx::Timeout;
+                // Small backoff helps the bus drain stray bytes before retry.
+                sleep_us(2000);
+                continue;
             }
+            consec_errors = 0;
             const std::int64_t diff = r.value - target_counts;
             const std::int64_t adiff = diff < 0 ? -diff : diff;
             if (adiff <= tolerance_counts) {

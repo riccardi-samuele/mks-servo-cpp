@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- `mks_servo/envelope.hpp` — `Envelope` struct + `auto_calibrate(Motor&)`
+  function. ~3-6 s self-characterisation that discovers the safe-fast
+  operating point of the motor + supply + load and returns a plain-
+  old-data Envelope (max steady RPM, recommended {rpm, acc} that
+  passed a mini-soak, measured 90° time + sigma, peak overshoot,
+  comms latency p50/p99). The "lib as a toy that finds its own
+  limits" pattern: user calls `auto_calibrate` once at startup, then
+  passes `MoveParams{env.recommended_rpm, env.recommended_acc}` to
+  subsequent moves. Persist `env` to disk (POD, just memcpy) for
+  instant subsequent startups. HIL-validated on NEMA17 42mm at 24V:
+  picks rpm=2000/acc=255 reliably; 5 consecutive runs produced
+  identical recommendations.
+- `examples/hil_auto_calibrate.cpp` — runs auto_calibrate on a live
+  motor and dispatches one round-trip move at the discovered params
+  to demonstrate the "after calibration, just use m.write(angle)"
+  pattern.
 - `examples/hil_envelope.cpp` — end-to-end operating-envelope
   characterisation. Six tests (comms latency, 90° vs acceleration,
   90° vs commanded RPM, overshoot, soak, max steady RPM) report what
@@ -43,6 +59,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   (3.7× faster, same code) — HIL-measured on NEMA17 42mm at 24V.
 
 ### Fixed
+- `Motor::wait_for_position` now tolerates up to 2 consecutive isolated
+  encoder-read failures before propagating an error. Back-to-back
+  polling at 256 k baud (the new default) occasionally races with a
+  stray "complete" ack frame from a previous move, producing a
+  transient ReadFailed at transport level. Previously the first such
+  glitch was fatal — Motor::write blocking returned TransportError
+  even though the motor had landed at target correctly. With the
+  counter, isolated glitches are absorbed (one ~2 ms backoff + retry);
+  3+ consecutive failures still surface immediately. HIL: 5/5 demo
+  moves after auto_calibrate now report status=0 (was 1-2/5 with
+  transient TransportError/Timeout/NotEnabled mixed).
 - `Motor::set_origin` now anchors `origin_offset_counts` to the encoder
   reading captured immediately after SET_ZERO_POINT, instead of blindly
   resetting it to 0. The encoder addition register is NEVER reset by
