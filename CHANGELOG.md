@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-06-06
+
 ### Added
 - `mks_servo/scheduler.hpp` — DAG-based multi-motor execution. One
   worker thread per motor (no shared locks across buses), four
