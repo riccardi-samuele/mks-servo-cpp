@@ -59,6 +59,55 @@
 
 namespace mks_servo {
 
+// ─── MotorProfile: per-motor timing tunables ────────────────────────
+//
+// Per-motor tuning. Users construct one and call sched.set_motor_profile(
+// motor, profile) before submitting moves; the values are copied onto
+// every MoveState the scheduler allocates for that motor at sched.move()
+// time. Default-constructed values mirror the conservative library-wide
+// defaults (designed for V1.0.8 SR_vFOC).
+//
+// Presets cover the HIL-validated configurations we've shipped:
+//   * MotorProfile::for_v1_0_8_sr_vfoc()  — A's setup on 12V/5A
+//   * MotorProfile::for_v1_0_9_sr_close() — B & C's setup on 12V/5A
+struct MotorProfile {
+    int    settle_drain_ms     = 30;       // bus cleanup after target
+    int    predispatch_drain_ms = 5;       // defensive flush before dispatch
+    int    inter_move_rest_us  = 100'000;  // post-move worker rest on this bus
+    int    consecutive_in_window = 2;      // in-tol reads to declare complete
+    double t_90deg_ms          = 0;        // measured; 0 = unknown
+
+    // ── Empirically-validated presets ────────────────────────────────
+    //
+    // Numbers come from hil_inter_move_rest_sweep on the dev fleet:
+    // V1.0.9 SR_CLOSE motors stayed reliable at inter_move_rest_us=5000
+    // and showed lower σ than 100 ms. V1.0.8 SR_vFOC was not swept
+    // explicitly (the swept fleet held V1.0.8 at default 100 ms while
+    // varying V1.0.9 only) — keep the conservative default here until
+    // a V1.0.8-specific sweep has been done.
+
+    static MotorProfile for_v1_0_9_sr_close() {
+        MotorProfile p;
+        p.settle_drain_ms      = 30;       // bus drain is firmware-timing-bound,
+                                           // not mechanical settle — keep 30 ms
+        p.predispatch_drain_ms = 5;
+        p.inter_move_rest_us   = 5'000;    // 20× shorter than V1.0.8 default
+        p.consecutive_in_window = 2;
+        p.t_90deg_ms           = 40.0;     // HIL: 39.89 ms ± 0.025 (clean bench)
+        return p;
+    }
+
+    static MotorProfile for_v1_0_8_sr_vfoc() {
+        MotorProfile p;
+        p.settle_drain_ms      = 30;
+        p.predispatch_drain_ms = 5;
+        p.inter_move_rest_us   = 100'000;  // V1.0.8 late-ack window unmeasured
+        p.consecutive_in_window = 2;
+        p.t_90deg_ms           = 43.0;     // HIL: 43.19 ms ± 0.49
+        return p;
+    }
+};
+
 // ─── Trigger kinds ──────────────────────────────────────────────────
 enum class TriggerKind : std::uint8_t {
     None = 0,             // dispatch immediately (no dependency)
@@ -103,6 +152,11 @@ struct alignas(64) MoveState {
     std::atomic<double>         progress{0.0};      // [0..1] during Polling
     std::atomic<std::uint64_t>  t_start_us{0};      // when dispatch began
     std::atomic<std::uint64_t>  t_end_us{0};        // when target reached
+
+    // Diagnostic timestamps (worker publishes for skew analysis)
+    std::atomic<std::uint64_t>  t_pickup_us{0};      // worker picked up Pending
+    std::atomic<std::uint64_t>  t_predrain_us{0};    // after predispatch drain
+    std::atomic<std::uint64_t>  t_e0_read_us{0};     // after encoder read
 
     // Internal (set by submitter before run)
     std::int64_t e0_counts = 0;          // encoder at dispatch
@@ -190,9 +244,79 @@ public:
         motors_.push_back(&m);
         per_motor_queues_.emplace_back();
         per_motor_last_state_.push_back(nullptr);
+        per_motor_profile_.emplace_back();  // default profile
         // The worker uses motors_[idx] and per_motor_queues_[idx].
         workers_.emplace_back([this, idx]{ this->worker_loop(idx); });
         return idx;
+    }
+
+    // Install a per-motor MotorProfile. Affects all subsequent
+    // sched.move() calls for this motor; in-flight moves are unaffected.
+    // The motor must already be registered via add().
+    void set_motor_profile(Motor& m, const MotorProfile& p) {
+        for (std::size_t i = 0; i < motors_.size(); ++i) {
+            if (motors_[i] == &m) { per_motor_profile_[i] = p; return; }
+        }
+        std::abort();  // caller bug: motor not registered
+    }
+
+    const MotorProfile& motor_profile(Motor& m) const {
+        for (std::size_t i = 0; i < motors_.size(); ++i) {
+            if (motors_[i] == &m) return per_motor_profile_[i];
+        }
+        std::abort();
+    }
+
+    // Probe a motor: measure its real t_90deg motion-only time and
+    // populate the per-motor profile's t_90deg_ms. Uses the historical
+    // hil_envelope::ec_do_90deg methodology (single-tolerance check,
+    // motion-only timing) so the number is directly comparable to the
+    // baselines in memory.
+    //
+    // The motor MUST be enabled, calibrated and at a stable position
+    // before calling. Shaft must be free to rotate ±90° from current.
+    //
+    // Returns the measured t_90deg in ms, or 0.0 on failure (in which
+    // case the profile's t_90deg_ms is NOT updated).
+    double probe_motor(Motor& m, int samples = 5,
+                       std::uint16_t rpm = 2000,
+                       std::uint8_t  acc = 255) {
+        auto& raw = m.raw();
+        double sum = 0;
+        int ok = 0;
+        for (int i = 0; i < samples; ++i) {
+            auto e0 = raw.read_encoder_addition();
+            if (!e0.ok()) continue;
+            const std::int32_t delta = 4096 * ((i % 2) ? -1 : +1);
+            const std::int64_t target = e0.value + delta;
+            const std::uint64_t t0 = now_us();
+            auto disp = raw.move_relative_axis(delta, rpm, acc);
+            if (!disp.ok() || !disp.value) continue;
+            const std::uint64_t deadline = t0 + 2'000'000ull;
+            bool reached = false;
+            while (now_us() < deadline) {
+                auto e = raw.read_encoder_addition();
+                if (!e.ok()) break;
+                const std::int64_t diff = e.value - target;
+                const std::int64_t adiff = diff < 0 ? -diff : diff;
+                if (adiff <= 50) { reached = true; break; }
+            }
+            const std::uint64_t t1 = now_us();
+            raw.transport_drain_settle(15);
+            if (reached) { sum += (double)(t1 - t0) / 1000.0; ++ok; }
+            // brief inter-probe rest so the firmware late-ack doesn't
+            // leak into the next probe
+            sleep_us(80'000);
+        }
+        if (ok == 0) return 0.0;
+        const double mean = sum / ok;
+        for (std::size_t i = 0; i < motors_.size(); ++i) {
+            if (motors_[i] == &m) {
+                per_motor_profile_[i].t_90deg_ms = mean;
+                return mean;
+            }
+        }
+        return mean;
     }
 
     // Submit a move. Default dependency: the previous move on the SAME
@@ -214,6 +338,17 @@ public:
         s->angle_deg  = angle_deg;
         s->params     = params;
         s->tol_counts = tol_counts;
+        // Apply per-motor profile to this move
+        const auto& prof = per_motor_profile_[idx];
+        s->settle_drain_ms       = prof.settle_drain_ms;
+        s->predispatch_drain_ms  = prof.predispatch_drain_ms;
+        s->inter_move_rest_us    = prof.inter_move_rest_us;
+        s->consecutive_in_window = prof.consecutive_in_window;
+        if (prof.t_90deg_ms > 0) {
+            // expected_duration scales with abs angle (assuming linear time)
+            const double abs_deg = angle_deg < 0 ? -angle_deg : angle_deg;
+            s->expected_duration_ms = (abs_deg / 90.0) * prof.t_90deg_ms;
+        }
 
         // Default dependency: previous move on same motor
         if (per_motor_last_state_[idx] != nullptr) {
@@ -388,6 +523,7 @@ private:
     }
 
     void process_move(MoveState* s) noexcept {
+        s->t_pickup_us.store(now_us(), std::memory_order_release);
         s->status.store(MoveStatus::WaitingDeps, std::memory_order_release);
 
         // 1. Resolve trigger
@@ -404,7 +540,9 @@ private:
         if (s->predispatch_drain_ms > 0) {
             raw.transport_drain_settle(s->predispatch_drain_ms);
         }
+        s->t_predrain_us.store(now_us(), std::memory_order_release);
         auto e_start = raw.read_encoder_addition();
+        s->t_e0_read_us.store(now_us(), std::memory_order_release);
         if (!e_start.ok()) {
             s->status.store(MoveStatus::Failed, std::memory_order_release);
             return;
@@ -550,6 +688,7 @@ private:
     std::vector<std::unique_ptr<MoveState>>   pool_;
     std::vector<std::vector<MoveState*>>      per_motor_queues_;
     std::vector<MoveState*>                   per_motor_last_state_;
+    std::vector<MotorProfile>                 per_motor_profile_;
     std::vector<std::thread>                  workers_;
     std::atomic<bool>                         release_{false};
     std::atomic<bool>                         shutdown_{false};

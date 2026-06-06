@@ -163,6 +163,40 @@ int main() {
     std::printf("  skew B-C: mean=%.0fµs max=%.0fµs\n", Sbc.mean, Sbc.max);
     std::printf("  wall:     mean=%.2fms σ=%.2fms max=%.2fms\n",
                 Swall.mean, Swall.sigma, Swall.max);
+    // One-shot dispatch-path breakdown after a long rest, so worker
+    // inter-move-rest drift across runs has fully cleared.
+    std::printf("\n  ── dispatch path breakdown after 500 ms rest ──\n");
+    sleep_ms(500);
+    sched.reset();
+    auto h0 = sched.move(A, 90.0, MoveParams{2000, 255});
+    auto h1 = sched.move(B, 90.0, MoveParams{2000, 255});
+    auto h2 = sched.move(C, 90.0, MoveParams{2000, 255});
+    sched.run();
+    auto report_path = [](const MoveHandle& h, const char* name) {
+        const auto& s = *h.state();
+        const auto tp = s.t_pickup_us.load();
+        const auto td = s.t_predrain_us.load();
+        const auto te = s.t_e0_read_us.load();
+        const auto ts = s.t_start_us.load();
+        std::printf("    %s: pickup=0 predrain=%+5lld  e0_read=%+5lld  dispatch=%+5lld µs\n",
+                    name,
+                    (long long)((std::int64_t)td - (std::int64_t)tp),
+                    (long long)((std::int64_t)te - (std::int64_t)tp),
+                    (long long)((std::int64_t)ts - (std::int64_t)tp));
+    };
+    report_path(h0, "A");
+    report_path(h1, "B");
+    report_path(h2, "C");
+    // Cross-motor: when did each one pick up vs the earliest pickup?
+    const auto tpA = h0.state()->t_pickup_us.load();
+    const auto tpB = h1.state()->t_pickup_us.load();
+    const auto tpC = h2.state()->t_pickup_us.load();
+    const auto earliest = std::min({tpA, tpB, tpC});
+    std::printf("    pickup offsets vs earliest: A=%+5lldµs B=%+5lldµs C=%+5lldµs\n",
+                (long long)((std::int64_t)tpA - (std::int64_t)earliest),
+                (long long)((std::int64_t)tpB - (std::int64_t)earliest),
+                (long long)((std::int64_t)tpC - (std::int64_t)earliest));
+    sleep_ms(80);
 
     // ── PHASE 3: sequential A → B → C ──
     std::printf("\n=== PHASE 3: sequential A → B → C ===\n");
