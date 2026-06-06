@@ -91,6 +91,7 @@ struct alignas(64) MoveState {
     double       expected_duration_ms = 0;   // for AtTimeBeforeEnd
     int          settle_drain_ms = 30;       // bus cleanup after target reached
     int          predispatch_drain_ms = 5;   // defensive flush before dispatch
+    int          inter_move_rest_us = 100'000; // post-move worker rest on this bus
 
     // Trigger condition (one ref + one value)
     TriggerKind  trigger_kind = TriggerKind::None;
@@ -337,26 +338,48 @@ private:
         }
 
         while (!shutdown_.load(std::memory_order_acquire)) {
-            // Process queued moves
-            auto& q = per_motor_queues_[idx];
-            std::size_t next = 0;
-            while (next < q.size() && !shutdown_.load(std::memory_order_acquire)) {
-                MoveState* s = q[next++];
-                process_move(s);
-                // Brief inter-move rest on this motor's bus. The firmware
-                // can emit a "complete" ack up to ~30 ms after the encoder
-                // reaches its target window (FTDI latency_timer + firmware
-                // buffer); the previous move's post-completion drain may
-                // have ended before that. A short sleep here gives the
-                // late ack time to land before the next move's dispatch.
-                sleep_us(100'000);
-            }
-
-            // Wait for next release (between run() calls) or shutdown
+            // Status-based scan: process any move with status == Pending.
+            // This is robust against queue clear+repopulate races between
+            // run() calls (e.g. when a previous run's inter-move rest is
+            // still in flight while the next run() repopulates the queue).
+            // Index-based iteration with a persistent local counter is NOT
+            // robust against that race — see git history.
+            //
+            // While release_ is true and we're not shutting down, keep
+            // scanning the queue for Pending work.
             while (release_.load(std::memory_order_acquire) &&
                    !shutdown_.load(std::memory_order_acquire)) {
-                sleep_us(100);
+                MoveState* next_move = nullptr;
+                auto& q = per_motor_queues_[idx];
+                for (auto* m : q) {
+                    if (m->status.load(std::memory_order_acquire)
+                        == MoveStatus::Pending) {
+                        next_move = m;
+                        break;
+                    }
+                }
+                if (next_move == nullptr) {
+                    // Nothing to do for this motor in the current plan.
+                    // Yield briefly, then re-check (cheap atomic load).
+                    sleep_us(100);
+                    continue;
+                }
+                process_move(next_move);
+                // Inter-move rest on this motor's bus. The firmware can
+                // emit a "complete" ack up to ~30 ms after the encoder
+                // reaches its target window (FTDI latency_timer + buffer);
+                // the previous move's post-completion drain may have ended
+                // before that. A short sleep gives the late ack time to
+                // land before the next move's dispatch on the same motor.
+                //
+                // Read from the MoveState we just processed so callers can
+                // tune per-move (typically populated from a MotorProfile
+                // — see SchedulerConfig planning notes).
+                const int rest_us = next_move->inter_move_rest_us;
+                if (rest_us > 0) sleep_us(static_cast<std::uint64_t>(rest_us));
             }
+
+            // Between runs: wait until the next release_=true edge.
             while (!release_.load(std::memory_order_acquire) &&
                    !shutdown_.load(std::memory_order_acquire)) {
                 sleep_us(50);
