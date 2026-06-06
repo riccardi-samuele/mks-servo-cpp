@@ -165,6 +165,7 @@ tests/
   test_motor_group.cpp     — multi-motor batch ops (mock)
   test_rt.cpp              — argument validation + privilege paths
   test_envelope_compile.cpp
+  test_scheduler_mock.cpp  — MotorProfile defaults/presets, queue-clear race regression
 ```
 
 ## Validation
@@ -178,7 +179,7 @@ Every module has both mock and HIL coverage:
 | RawDriver | 9 cases incl. stray frames | every opcode used by Motor |
 | Motor (Level 0/1) | 10 cases | move_quarter_turn 5/5 |
 | MotorGroup | 6 cases | hil_motor_group 5/5 |
-| Scheduler / MotorProfile | mock-build smoke | 3-motor, all 5 phases, 10/10 choreography |
+| Scheduler / MotorProfile | 8 cases, 67 assertions incl. race regression | 3-motor, all 5 phases, 10/10 choreography |
 | Soak | — | **200/200 moves continuous, 0 failures** |
 | Benchmark vs Python | — | 44.3 ms mean (vs Python 41.7 ms) at 256k baud |
 | Single-motor t_90deg (V1.0.9 SR_CLOSE) | — | **39.89 ms ± 0.025 ms** motion-only |
