@@ -29,9 +29,9 @@ The design priorities, in order:
 3. **Real-time friendly.** Optional `rt.hpp` helpers for `mlockall`,
    `SCHED_FIFO`, and core pinning; the library never calls them
    internally so callers stay in control.
-4. **Layered.** Five levels (`protocol` → `transport` → `raw_driver`
-   → `motor` → `motor_group`) so users can pick the abstraction that
-   matches their problem.
+4. **Layered.** Six levels (`protocol` → `transport` → `raw_driver`
+   → `motor` → `motor_group` → `scheduler`) so users can pick the
+   abstraction that matches their problem.
 
 ## Quick start
 
@@ -76,11 +76,24 @@ what you need.
 
 | Level | Header | Surface | When to use |
 |-------|--------|---------|-------------|
-| 0 + 1 | `motor.hpp` | `Motor::write/read/move_relative`, soft limits, set_origin | Day-to-day robotics |
-| Group | `motor_group.hpp` | `MotorGroup::dispatch_all`, `wait_all_settled` | N motors, N dedicated buses |
+| Scheduler | `scheduler.hpp` | `Scheduler::move/run`, `MotorProfile`, DAG triggers (`after`, `at_progress`, `at_time_after_start`, `at_time_before_end`) | Choreographed multi-motor moves with cross-bus dependencies |
+| Group | `motor_group.hpp` | `MotorGroup::dispatch_all`, `wait_all_settled` | N motors, N dedicated buses, parallel/synchronous batch |
+| 0 + 1 | `motor.hpp` | `Motor::write/read/move_relative`, soft limits, set_origin | Day-to-day single-motor control |
 | 3 | `raw_driver.hpp` | `RawDriver` — 1:1 wrapper over every firmware opcode | Power-user / debugging |
 | Wire | `protocol.hpp` | `build_frame`, `parse_frame`, `checksum8` | Custom framing, tests |
 | RT | `rt.hpp` (optional) | `lock_memory`, `set_realtime_priority`, `pin_thread_to_core` | Sub-ms determinism |
+
+For multi-motor control there are two abstractions, in increasing power:
+
+- **`MotorGroup`** — synchronous batch: dispatch the same kind of move to
+  every motor at once, then wait for the slowest. Right for "all motors
+  do the same thing at the same time".
+- **`Scheduler`** — DAG of moves with explicit dependencies. Per-motor
+  worker threads (one per bus, no shared locks), four trigger primitives
+  (`.after()`, `.at_progress(other, 0.5)`, `.at_time_after_start(other, ms)`,
+  `.at_time_before_end(other, ms)`), and per-motor `MotorProfile` so a
+  heterogeneous fleet (different firmware versions, different work_modes)
+  runs each bus at its empirically-validated timings.
 
 ## Topology
 
@@ -117,17 +130,32 @@ include/mks_servo/
   transport.hpp     termios2 raw I/O + frame-scanning transact()
   raw_driver.hpp    Level 3 1:1 opcode wrapper + dispatch_* (fire-and-forget)
   motor.hpp         Level 0/1 ergonomic API, soft limits, set_origin
-  motor_group.hpp   N-bus N-motor batch operations
+  motor_group.hpp   N-bus N-motor synchronous batch
+  scheduler.hpp     DAG-of-moves with cross-motor triggers + MotorProfile
+  envelope.hpp      Auto-calibration (RPM/acc envelope) + disk cache
+  characterize.hpp  P1/P3/P5/S2 empirical characterisation suite
+  diagnostics.hpp   Bus/motor health probes
+  profile.hpp       Move profile helpers
   rt.hpp            Optional helpers: mlockall, SCHED_FIFO, core pinning
 
 examples/
-  read_encoder.cpp        — minimal HIL hello-world
-  move_quarter_turn.cpp   — Motor::write/read demo
-  bench_quarter_turn.cpp  — apples-to-apples bench vs the Python reference
-  hil_motor_group.cpp     — MotorGroup against the live motor
-  hil_soak.cpp            — 200+ moves continuous; rare-fault detection
-  stress_read.cpp         — encoder polling at line rate
-  rt_demo.cpp             — show what rt.hpp can install on this user
+  read_encoder.cpp                — minimal HIL hello-world
+  move_quarter_turn.cpp           — Motor::write/read demo
+  bench_quarter_turn.cpp          — apples-to-apples bench vs the Python reference
+  hil_motor_group.cpp             — MotorGroup against the live motor
+  hil_motor_group_n2.cpp          — 2-bus group sync
+  hil_soak.cpp                    — 200+ moves continuous; rare-fault detection
+  stress_read.cpp                 — encoder polling at line rate
+  rt_demo.cpp                     — show what rt.hpp can install on this user
+  hil_envelope.cpp                — auto_calibrate + cache demo
+  hil_auto_calibrate.cpp          — Envelope full sweep
+  hil_voltage_setup.cpp           — work_current tuning helper
+  hil_single_motor_bench.cpp      — per-motor characterisation (motion-only timing)
+  hil_scheduler.cpp               — Scheduler 2-motor trigger primitives
+  hil_scheduler_choreography.cpp  — Scheduler 8-move choreography (2 motors)
+  hil_scheduler_n3.cpp            — Scheduler 3-motor, all phases + dispatch breakdown
+  hil_inter_move_rest_sweep.cpp   — empirical tuning of inter_move_rest_us
+  hil_motor_profile_demo.cpp      — probe_motor + presets end-to-end
 
 tests/
   test_protocol.cpp        — frame build/parse vectors from Python suite
@@ -136,6 +164,7 @@ tests/
   test_motor.cpp           — math, limits, set_origin (mock)
   test_motor_group.cpp     — multi-motor batch ops (mock)
   test_rt.cpp              — argument validation + privilege paths
+  test_envelope_compile.cpp
 ```
 
 ## Validation
@@ -149,8 +178,11 @@ Every module has both mock and HIL coverage:
 | RawDriver | 9 cases incl. stray frames | every opcode used by Motor |
 | Motor (Level 0/1) | 10 cases | move_quarter_turn 5/5 |
 | MotorGroup | 6 cases | hil_motor_group 5/5 |
+| Scheduler / MotorProfile | mock-build smoke | 3-motor, all 5 phases, 10/10 choreography |
 | Soak | — | **200/200 moves continuous, 0 failures** |
 | Benchmark vs Python | — | 44.3 ms mean (vs Python 41.7 ms) at 256k baud |
+| Single-motor t_90deg (V1.0.9 SR_CLOSE) | — | **39.89 ms ± 0.025 ms** motion-only |
+| inter_move_rest_us tuning (V1.0.9 SR_CLOSE) | — | 5 ms optimum: 12-move wall σ 23 ms (vs 137 ms at 100 ms) |
 
 CI runs Linux × {GCC, Clang} × C++{17, 20}, plus macOS / Windows smoke.
 
