@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 
 project(mks_servo
-    VERSION 0.3.0
+    VERSION 0.4.0
     DESCRIPTION "C++17 library for MKS SERVO42D RS485 stepper drivers"
     HOMEPAGE_URL "https://github.com/riccardi-samuele/mks-servo-cpp"
     LANGUAGES CXX
