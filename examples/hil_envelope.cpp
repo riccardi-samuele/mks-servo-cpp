@@ -581,31 +581,66 @@ int main(int argc, char** argv) {
 
     EnvelopeReport rep;
 
-    // Probe baud (try 256k first, then 38400)
-    int baud = 0;
+    // Probe initial baud (try 256k first, then 38400). Then attempt upgrade
+    // to 256k. Verify the upgrade actually took effect with a read at the
+    // target baud — older firmware versions or unstable wiring can leave the
+    // motor at the original baud despite acking the SET_BAUD command.
+    // If the upgrade fails to verify, fall back to the probed baud and run
+    // the envelope there (slower polling, but the measurements still
+    // characterise the motor honestly).
+    int probed_baud = 0;
     {
         Transport t;
         for (int b : {256000, 38400}) {
             if (t.open(dev, b) != Transport::Status::OK) continue;
             RawDriver p(t, static_cast<std::uint8_t>(addr));
             auto e = p.read_encoder_addition();
-            if (e.ok()) { baud = b; break; }
+            if (e.ok()) { probed_baud = b; break; }
             t.close();
         }
     }
-    if (!baud) {
+    if (!probed_baud) {
         std::fprintf(stderr, "no response from %s @ 256k or 38400\n", dev);
         return 1;
     }
-    if (baud != 256000) {
-        std::printf("switching motor to 256000 baud (was %d)...\n", baud);
-        send_set_baud(dev, baud, 0x07);
+
+    int run_baud = probed_baud;
+    bool switched_to_256k = false;
+    if (probed_baud != 256000) {
+        std::printf("attempting baud upgrade %d -> 256000...\n", probed_baud);
+        send_set_baud(dev, probed_baud, 0x07);
+        // Verify the switch by opening at 256k and reading the encoder.
+        Transport probe;
+        if (probe.open(dev, 256000) == Transport::Status::OK) {
+            RawDriver p(probe, static_cast<std::uint8_t>(addr));
+            auto e = p.read_encoder_addition();
+            if (e.ok()) {
+                run_baud = 256000;
+                switched_to_256k = true;
+                std::printf("  -> upgrade confirmed (256k responsive)\n");
+            }
+        }
+        if (!switched_to_256k) {
+            std::printf("  -> upgrade ignored by firmware; staying at %d\n", probed_baud);
+            // Some firmwares change internal state even when ignoring the
+            // baud value — re-probe at original to be sure.
+            Transport rec;
+            if (rec.open(dev, probed_baud) == Transport::Status::OK) {
+                RawDriver p(rec, static_cast<std::uint8_t>(addr));
+                if (!p.read_encoder_addition().ok()) {
+                    std::fprintf(stderr,
+                        "motor unreachable at %d after failed SET_BAUD — aborting\n",
+                        probed_baud);
+                    return 2;
+                }
+            }
+        }
     }
-    rep.baud = 256000;
+    rep.baud = run_baud;
 
     Transport t;
-    if (t.open(dev, 256000) != Transport::Status::OK) {
-        std::fprintf(stderr, "open at 256k failed\n");
+    if (t.open(dev, run_baud) != Transport::Status::OK) {
+        std::fprintf(stderr, "open at %d failed\n", run_baud);
         return 2;
     }
     RawDriver raw(t, static_cast<std::uint8_t>(addr));
@@ -625,6 +660,14 @@ int main(int argc, char** argv) {
 
     std::printf("=== mks-servo envelope characterisation ===\n");
     std::printf("device: %s @ %d baud  addr=%d\n", dev, rep.baud, addr);
+    if (!switched_to_256k && probed_baud != 256000) {
+        std::printf("NOTE: firmware does not honour SET_BAUD; running at %d.\n",
+                    probed_baud);
+        std::printf("  Comms latency will be ~%.1f ms per RT instead of ~1 ms.\n",
+                    11.0 * 8.0 * 1000.0 / static_cast<double>(probed_baud));
+        std::printf("  90deg physical time is firmware-acc-limited, NOT baud-limited,\n");
+        std::printf("  so per-move numbers are still meaningful for comparison.\n");
+    }
     std::printf("estimated runtime: ~80s\n\n");
 
     // Order matters: MOVE_SPEED (test 3) leaves the firmware's axis-position
@@ -648,6 +691,11 @@ int main(int argc, char** argv) {
 
     raw.enable(false);
     t.close();
-    if (baud != 256000) send_set_baud(dev, 256000, 0x04);
+    // Only restore baud if we actually switched it. For motors whose firmware
+    // ignores SET_BAUD, attempting a restore would be a no-op at best and
+    // could leave the bus in an undefined state at worst.
+    if (switched_to_256k) {
+        send_set_baud(dev, 256000, 0x04);
+    }
     return 0;
 }
