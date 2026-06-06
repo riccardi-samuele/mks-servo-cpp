@@ -87,7 +87,10 @@ struct alignas(64) MoveState {
     double       angle_deg   = 0;
     MoveParams   params{};
     std::int32_t tol_counts  = 50;
-    double       expected_duration_ms = 0;  // for AtTimeBeforeEnd
+    int          consecutive_in_window = 2;  // require N in-tol reads before completing
+    double       expected_duration_ms = 0;   // for AtTimeBeforeEnd
+    int          settle_drain_ms = 30;       // bus cleanup after target reached
+    int          predispatch_drain_ms = 5;   // defensive flush before dispatch
 
     // Trigger condition (one ref + one value)
     TriggerKind  trigger_kind = TriggerKind::None;
@@ -340,6 +343,13 @@ private:
             while (next < q.size() && !shutdown_.load(std::memory_order_acquire)) {
                 MoveState* s = q[next++];
                 process_move(s);
+                // Brief inter-move rest on this motor's bus. The firmware
+                // can emit a "complete" ack up to ~30 ms after the encoder
+                // reaches its target window (FTDI latency_timer + firmware
+                // buffer); the previous move's post-completion drain may
+                // have ended before that. A short sleep here gives the
+                // late ack time to land before the next move's dispatch.
+                sleep_us(100'000);
             }
 
             // Wait for next release (between run() calls) or shutdown
@@ -362,8 +372,15 @@ private:
 
         s->status.store(MoveStatus::Dispatching, std::memory_order_release);
 
-        // 2. Read e0, compute target
+        // 2. Read e0, compute target. Drain defensively first to catch
+        // any stray late ack the previous move's post-completion drain
+        // might have missed (worst-case FTDI latency_timer is ~16 ms
+        // bimodal, so a stray byte can arrive after our 30 ms drain
+        // returned). Cheap if the bus is already clean.
         auto& raw = s->motor->raw();
+        if (s->predispatch_drain_ms > 0) {
+            raw.transport_drain_settle(s->predispatch_drain_ms);
+        }
         auto e_start = raw.read_encoder_addition();
         if (!e_start.ok()) {
             s->status.store(MoveStatus::Failed, std::memory_order_release);
@@ -373,7 +390,11 @@ private:
         s->e0_counts     = e_start.value;
         s->target_counts = e_start.value + delta;
 
-        // 3. Dispatch
+        // 3. Dispatch. We use MOVE_REL because the firmware's internal
+        // absolute-position tracker isn't kept in sync with the encoder
+        // outside of SET_ZERO_POINT operations; MOVE_REL is self-consistent
+        // because the firmware moves by the requested delta from wherever
+        // it currently believes it is.
         const std::uint64_t t0 = now_us();
         s->t_start_us.store(t0, std::memory_order_release);
         auto disp = raw.move_relative_axis(delta,
@@ -386,17 +407,29 @@ private:
 
         s->status.store(MoveStatus::Polling, std::memory_order_release);
 
-        // 4. Poll until target within tolerance
-        const std::uint64_t deadline = t0 + 5'000'000ull;  // 5 sec safety
+        // 4. Poll until target within tolerance, mirroring the robustness
+        // pattern from Motor::wait_for_position: require `consecutive_in_window`
+        // in-tol reads before declaring completion, and tolerate up to 2
+        // consecutive transient bus errors (a stray "complete" ack from a
+        // previous move can momentarily desynchronise the response stream
+        // even when the motor itself is fine).
+        const std::uint64_t deadline = t0 + 5'000'000ull;
         const double inv_delta = (delta != 0) ? (1.0 / static_cast<double>(delta)) : 0;
+        int in_window = 0;
+        int consec_errors = 0;
+        constexpr int MAX_CONSEC_ERRORS = 2;
         while (now_us() < deadline) {
             auto e = raw.read_encoder_addition();
             if (!e.ok()) {
-                s->status.store(MoveStatus::Failed, std::memory_order_release);
-                return;
+                if (++consec_errors > MAX_CONSEC_ERRORS) {
+                    s->status.store(MoveStatus::Failed, std::memory_order_release);
+                    return;
+                }
+                // Backoff to let the bus drain any stray bytes before retry.
+                sleep_us(2000);
+                continue;
             }
-            const std::int64_t diff = e.value - s->target_counts;
-            const std::int64_t adiff = diff < 0 ? -diff : diff;
+            consec_errors = 0;
 
             // Publish progress (clamped to [0, 1])
             const std::int64_t moved = e.value - s->e0_counts;
@@ -405,11 +438,27 @@ private:
             if (prog > 1) prog = 1;
             s->progress.store(prog, std::memory_order_release);
 
+            const std::int64_t diff = e.value - s->target_counts;
+            const std::int64_t adiff = diff < 0 ? -diff : diff;
             if (adiff <= s->tol_counts) {
-                s->t_end_us.store(now_us(), std::memory_order_release);
-                s->progress.store(1.0, std::memory_order_release);
-                s->status.store(MoveStatus::Completed, std::memory_order_release);
-                return;
+                if (++in_window >= s->consecutive_in_window) {
+                    // Record physical-arrival timestamp before bus cleanup.
+                    s->t_end_us.store(now_us(), std::memory_order_release);
+                    s->progress.store(1.0, std::memory_order_release);
+                    // Drain the trailing "complete" ack frame the firmware
+                    // emits a few ms after the encoder reaches its window.
+                    // Without this the next dispatch on this motor races
+                    // against the pending ack and sees a corrupted
+                    // response. Same idiom Motor::write blocking uses.
+                    raw.transport_drain_settle(s->settle_drain_ms);
+                    // Publish Completed only after the bus is clean, so
+                    // AfterCompleted dependents on this motor don't
+                    // dispatch into a half-drained transport.
+                    s->status.store(MoveStatus::Completed, std::memory_order_release);
+                    return;
+                }
+            } else {
+                in_window = 0;
             }
         }
         // Timeout
