@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- `mks_servo/scheduler.hpp` — DAG-based multi-motor execution. One
+  worker thread per motor (no shared locks across buses), four
+  trigger primitives: `.after(other)`, `.at_progress(other, frac)`,
+  `.at_time_after_start(other, ms)`, `.at_time_before_end(other, ms)`.
+  Status-based worker scan makes queue clear+repopulate races between
+  `sched.run()` calls safe (fixes the hang seen with single-move-per-
+  run workloads). Per-move tunables (`settle_drain_ms`,
+  `predispatch_drain_ms`, `inter_move_rest_us`, `consecutive_in_window`)
+  on every `MoveState`, copied from the per-motor profile at
+  `sched.move()` time.
+- `MotorProfile` + `Scheduler::set_motor_profile()` — per-motor timing
+  tunables for heterogeneous fleets. HIL-validated presets:
+  `MotorProfile::for_v1_0_9_sr_close()` (inter_move_rest 5 ms,
+  measured t_90deg 40 ms) and `MotorProfile::for_v1_0_8_sr_vfoc()`
+  (inter_move_rest 100 ms, measured t_90deg 43 ms). On a 12-move
+  3-motor choreography the V1.0.9 preset took σ from 137 ms to 23 ms
+  vs the conservative 100 ms default — same mean, much tighter.
+- `Scheduler::probe_motor()` — runs the canonical hil_envelope
+  motion-only timing on a motor (5 ±90° samples by default), populates
+  `MotorProfile::t_90deg_ms`, returns the measured mean. Replaces
+  manual baseline measurements at fleet bring-up.
+- Per-move diagnostic timestamps (`t_pickup_us`, `t_predrain_us`,
+  `t_e0_read_us`) published by the worker during `process_move`,
+  letting callers attribute parallel-dispatch skew to specific stages
+  (pickup wake, bus drain, encoder read, firmware ack). Cost: three
+  cheap atomic stores per move.
+- `examples/hil_scheduler_n3.cpp` — 3-motor Scheduler bench across
+  five phases (solo baseline reproduction, parallel A‖B‖C, sequential
+  A→B→C, cross-motor `at_progress`, 12-move mixed choreography). The
+  test that surfaced the queue-clear race during development.
+- `examples/hil_inter_move_rest_sweep.cpp` — empirical tuning sweep
+  of `inter_move_rest_us` across {100k, 50k, 20k, 10k, 5k, 2k} µs on
+  a 12-move 3-motor choreography. The sweep produced the 5000 µs
+  recommendation in `MotorProfile::for_v1_0_9_sr_close()`.
+- `examples/hil_motor_profile_demo.cpp` — end-to-end usable template
+  for fleet bring-up: `probe_motor()` each registered motor, then
+  install per-motor presets, then run.
+- `examples/hil_single_motor_bench.cpp` — per-motor characterisation
+  (firmware version probe, SR_CLOSE + 256k + calibrate setup, t_90deg
+  sweep across {1000/200, 1500/255, 2000/255, 2500/255, 3000/255}
+  combos with motion-only timing matching the hil_envelope baseline,
+  max sustained RPM via MOVE_SPEED). HIL-confirmed motor C
+  (smaller-body V1.0.9) at 39.89 ms ± 0.025 ms — matches motor B
+  within natural variation.
+
+### Fixed
+- `Scheduler` worker race: the previous index-based scan kept a
+  persistent `next` counter and a 100 ms inter-move sleep that could
+  outlive the run that scheduled the move. A subsequent `sched.run()`
+  that cleared and repopulated the queue while the worker was still
+  asleep would leave the worker spinning forever on `release_=false`.
+  The new status-based scan iterates the queue each pass looking for
+  `Pending` moves; queue resets and repopulates are safe.
+
 ## [0.3.0] — 2026-05-31
 
 ### Added
