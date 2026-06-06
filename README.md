@@ -208,4 +208,9 @@ meant to be safe to use in hardware and robotics products.
   Python sibling library. Production-stable, HIL-validated.
 - [`docs/design.md`](docs/design.md) — architecture decisions and the
   firmware quirks the design works around.
+- [`docs/setup_guide.md`](docs/setup_guide.md) — supply voltage and
+  work_current tuning.
+- [`docs/scheduler_guide.md`](docs/scheduler_guide.md) — Scheduler API,
+  DAG triggers, MotorProfile presets, and the empirical numbers
+  behind the inter_move_rest_us 5 ms recommendation.
 - [MKS SERVO42D firmware manual](https://github.com/makerbase-motor/MKS-SERVO42D-57D)
