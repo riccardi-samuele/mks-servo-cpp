@@ -52,6 +52,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   max sustained RPM via MOVE_SPEED). HIL-confirmed motor C
   (smaller-body V1.0.9) at 39.89 ms ± 0.025 ms — matches motor B
   within natural variation.
+- `docs/scheduler_guide.md` — user-facing guide to the Scheduler:
+  trigger primitives walkthrough, `MotorProfile` fields and presets,
+  the `inter_move_rest_us` sweep table that produced the 5 ms
+  recommendation, dispatch-path diagnostic timestamps cheat-sheet,
+  and a heterogeneous-fleet recipe for mixed V1.0.8 + V1.0.9 setups.
+- `tests/test_scheduler_mock.cpp` — 8 cases / 67 assertions against
+  a socketpair-backed mock motor (teleport semantics — instant
+  encoder/ack reply, no wall-clock dependency). Covers default and
+  preset MotorProfile values, profile install / lookup, per-MoveState
+  field propagation, MoveHandle trigger fluent API, single-move
+  `sched.run()` smoke, and a regression test for the queue-clear
+  race (ten consecutive single-move runs must all complete).
 
 ### Fixed
 - `Scheduler` worker race: the previous index-based scan kept a

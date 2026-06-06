@@ -27,7 +27,8 @@ using namespace mks_servo;
 
 static std::uint64_t now_us() {
     struct timespec ts; ::clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t)ts.tv_sec*1'000'000ull + ts.tv_nsec/1000;
+    return static_cast<std::uint64_t>(ts.tv_sec) * 1'000'000ull
+         + static_cast<std::uint64_t>(ts.tv_nsec) / 1000ull;
 }
 static void sleep_ms(int ms) {
     struct timespec ts{ms / 1000, (ms % 1000) * 1'000'000L};
@@ -67,9 +68,10 @@ static W run_pattern(Scheduler& sched, Motor& A, Motor& B, Motor& C,
     }
     std::sort(walls.begin(), walls.end());
     double sum = 0; for (double v : walls) sum += v;
-    const double mean = sum / walls.size();
+    const double n = static_cast<double>(walls.size());
+    const double mean = sum / n;
     double var = 0; for (double v : walls) var += (v - mean) * (v - mean);
-    return {mean, std::sqrt(var / walls.size()), walls.front(), walls.back(), fails};
+    return {mean, std::sqrt(var / n), walls.front(), walls.back(), fails};
 }
 
 int main() {

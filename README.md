@@ -142,8 +142,15 @@ examples/
   read_encoder.cpp                — minimal HIL hello-world
   move_quarter_turn.cpp           — Motor::write/read demo
   bench_quarter_turn.cpp          — apples-to-apples bench vs the Python reference
+  characterize.cpp                — CharacterizationSuite (P1/P3/P5/S2) full sweep
+  hil_diagnostics.cpp             — bus/motor health probes
+  hil_drain_timing.cpp            — drain_input settle-time micro-benchmark
+  hil_chained_moves.cpp           — MOVE_ABS_AXIS realtime-update characterisation
   hil_motor_group.cpp             — MotorGroup against the live motor
   hil_motor_group_n2.cpp          — 2-bus group sync
+  hil_profile.cpp                 — Profile + apply_profile_to_motor demo
+  hil_shortest.cpp                — move_relative_shortest path-wrap demo
+  hil_auto_clear.cpp              — auto-clear stall protection
   hil_soak.cpp                    — 200+ moves continuous; rare-fault detection
   stress_read.cpp                 — encoder polling at line rate
   rt_demo.cpp                     — show what rt.hpp can install on this user
