@@ -191,6 +191,7 @@ Every module has both mock and HIL coverage:
 | Benchmark vs Python | — | 44.3 ms mean (vs Python 41.7 ms) at 256k baud |
 | Single-motor t_90deg (V1.0.9 SR_CLOSE) | — | **39.89 ms ± 0.025 ms** motion-only |
 | inter_move_rest_us tuning (V1.0.9 SR_CLOSE) | — | 5 ms optimum: 12-move wall σ 23 ms (vs 137 ms at 100 ms) |
+| Fast sequential (V1.0.9 SR_CLOSE) | — | 20 moves B↔C via `at_progress(0.90)` + settle=5: **805 ms ± 3.66 ms** wall = 40.3 ms/move, 0.6 % above theoretical floor, 0 fails in 1000-move soak |
 
 CI runs Linux × {GCC, Clang} × C++{17, 20}, plus macOS / Windows smoke.
 

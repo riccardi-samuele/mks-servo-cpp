@@ -108,18 +108,21 @@ The shipped presets cover the two HIL-validated configurations:
 
 ```cpp
 sched.set_motor_profile(m, MotorProfile::for_v1_0_9_sr_close());
-// settle_drain 30, inter_move_rest 5 000 µs, t_90deg 40 ms
+// settle_drain 5, inter_move_rest 5 000 µs, t_90deg 40 ms
 
 sched.set_motor_profile(m, MotorProfile::for_v1_0_8_sr_vfoc());
 // settle_drain 30, inter_move_rest 100 000 µs, t_90deg 43 ms
 ```
 
-The big difference is `inter_move_rest_us`: V1.0.9 SR_CLOSE drivers
-need 5 ms while V1.0.8 SR_vFOC needs 100 ms. The V1.0.8 firmware
-emits a late-ack frame ~ 25 ms after motion completes (over and above
-the 30 ms `settle_drain`) that the next move's `predispatch_drain` then
-has to absorb — keeping the inter-move rest high gives the late ack
-time to arrive before the next dispatch.
+The two big differences between the V1.0.8 and V1.0.9 presets are
+`settle_drain_ms` (30 → 5) and `inter_move_rest_us` (100 000 → 5 000).
+The V1.0.8 firmware emits a late-ack frame ~ 25 ms after motion
+completes that the next move's `predispatch_drain` has to absorb,
+which is why the conservative settle and high inter-move rest are
+needed. V1.0.9 SR_CLOSE emits the ack much sooner — empirically
+settle_drain=5 ms passed a 1000-move soak with 0 failures (and
+settle_drain=2 ms also passed at 0 failures, but 5 ms keeps a
+margin against edge motor / cable conditions).
 
 ### Auto-tune at startup with `probe_motor`
 
@@ -215,17 +218,49 @@ via `at_progress` rather than waiting in FIFO chains.
 See `examples/hil_motor_profile_demo.cpp` for a runnable template of
 this pattern.
 
+## Fast sequential chains: `at_progress(prev, 0.90)` over `.after(prev)`
+
+When you have a chain of moves where each waits for the previous to
+finish — e.g. a 20-move B↔C sequence — `.after(prev)` is the obvious
+choice but it stalls the next dispatch for the FULL `settle_drain_ms`
+of the previous move (the worker only marks `Completed` after the
+drain returns). `.at_progress(prev, 0.90)` instead fires when the
+previous move's encoder has covered 90 % of its delta, which is
+typically a few ms before motion ends — and the `settle_drain` of the
+previous move then overlaps with the acceleration ramp of the next
+one, completely hidden.
+
+Measured on a 20-move sequential B↔C chain (V1.0.9 SR_CLOSE,
+12 V/5 A, soak N=50):
+
+| Pattern | Wall mean | σ | min | max |
+|---|---|---|---|---|
+| `.after(prev)` + settle=30 (old preset) | 1343 ms | 32.49 | 1279 | 1369 |
+| `.after(prev)` + settle=5 (new preset) | 989 ms | 3.60 | 984 | 995 |
+| `.at_progress(prev, 0.90)` + settle=30 | 851 ms | 3.28 | 847 | 855 |
+| **`.at_progress(prev, 0.90)` + settle=5 (recommended)** | **805 ms** | **3.66** | **797** | **813** |
+| Theoretical floor (20 × t_90deg) | 800 ms | — | — | — |
+
+The recommended combination lands within 0.6 % of the floor. All
+configs above were 100 % reliable across the 1000-move soak.
+
+If your application has true strict ordering (the next move's
+parameters depend on the previous one's outcome), keep `.after()`.
+For "always do A then B then …" choreographies, `.at_progress(0.90)`
+is essentially free.
+
 ## Performance numbers (HIL, 3 motors, 12V/5A)
 
-From `hil_scheduler_n3`, V1.0.9 SR_CLOSE fleet, 256 k baud:
+From `hil_scheduler_n3` (V1.0.9 SR_CLOSE) on a freshly idle fleet:
 
 | Pattern | Wall mean | σ |
 |---|---|---|
 | Solo (any single motor) | 40-42 ms | ~0.03 ms |
-| Sequential A→B→C | ~200 ms | 10 ms |
+| Sequential A→B→C (`.after()`, chain of 3) | ~200 ms | 10 ms |
 | Parallel A‖B‖C | ~100 ms | 5 ms |
-| Cross-motor at_progress(B, 0.5) | ~85 ms | 3 ms |
-| 12-move mixed choreography | **849 ms** | **23 ms** |
+| Cross-motor `at_progress(B, 0.5)` | ~85 ms | 3 ms |
+| 12-move mixed choreography (3-motor) | 794 ms | 2.87 ms |
+| 20-move B↔C `.at_progress(0.90)` chain | **805 ms** | **3.66 ms** |
 
 Choreography wall vs sum-of-solo-times tells you how much
 parallelism the DAG actually achieves; reasonable DAGs are 30-50 %

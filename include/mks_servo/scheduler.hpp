@@ -79,17 +79,26 @@ struct MotorProfile {
 
     // ── Empirically-validated presets ────────────────────────────────
     //
-    // Numbers come from hil_inter_move_rest_sweep on the dev fleet:
+    // Numbers come from hil_inter_move_rest_sweep + a later EXTREME
+    // settle/at_progress sweep + a 1000-move soak on the dev fleet.
     // V1.0.9 SR_CLOSE motors stayed reliable at inter_move_rest_us=5000
-    // and showed lower σ than 100 ms. V1.0.8 SR_vFOC was not swept
+    // AND settle_drain_ms=5 (the firmware's late-ack window in SR_CLOSE
+    // mode is far shorter than V1.0.8 — settle_drain=2 also passed the
+    // soak at 0/50 fails, but 5 keeps a small safety margin against
+    // edge motor/cable conditions). V1.0.8 SR_vFOC was not swept
     // explicitly (the swept fleet held V1.0.8 at default 100 ms while
     // varying V1.0.9 only) — keep the conservative default here until
     // a V1.0.8-specific sweep has been done.
+    //
+    // Sequential-chain pattern: combine the preset with
+    // `.at_progress(prev, 0.90)` triggers instead of `.after(prev)` to
+    // hide the settle window inside the next move's acceleration ramp.
+    // Measured floor on B↔C 20-move chain: 40.3 ms/move = 806 ms wall
+    // (theoretical floor 40 ms × 20 = 800 ms).
 
     static MotorProfile for_v1_0_9_sr_close() {
         MotorProfile p;
-        p.settle_drain_ms      = 30;       // bus drain is firmware-timing-bound,
-                                           // not mechanical settle — keep 30 ms
+        p.settle_drain_ms      = 5;        // V1.0.9 late-ack arrives early
         p.predispatch_drain_ms = 5;
         p.inter_move_rest_us   = 5'000;    // 20× shorter than V1.0.8 default
         p.consecutive_in_window = 2;

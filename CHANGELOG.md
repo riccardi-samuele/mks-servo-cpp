@@ -20,11 +20,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `sched.move()` time.
 - `MotorProfile` + `Scheduler::set_motor_profile()` — per-motor timing
   tunables for heterogeneous fleets. HIL-validated presets:
-  `MotorProfile::for_v1_0_9_sr_close()` (inter_move_rest 5 ms,
-  measured t_90deg 40 ms) and `MotorProfile::for_v1_0_8_sr_vfoc()`
-  (inter_move_rest 100 ms, measured t_90deg 43 ms). On a 12-move
+  `MotorProfile::for_v1_0_9_sr_close()` (settle_drain 5 ms,
+  inter_move_rest 5 ms, measured t_90deg 40 ms) and
+  `MotorProfile::for_v1_0_8_sr_vfoc()` (settle_drain 30 ms,
+  inter_move_rest 100 ms, measured t_90deg 43 ms). On a 12-move
   3-motor choreography the V1.0.9 preset took σ from 137 ms to 23 ms
-  vs the conservative 100 ms default — same mean, much tighter.
+  vs the conservative 100 ms default — same mean, much tighter. On a
+  20-move sequential B↔C chain the V1.0.9 preset combined with
+  `.at_progress(prev, 0.90)` triggers lands at 805 ms wall (0.6 %
+  above the 800 ms theoretical floor of 20 × t_90deg) at σ 3.66 ms,
+  100 % reliable over a 1000-move soak.
 - `Scheduler::probe_motor()` — runs the canonical hil_envelope
   motion-only timing on a motor (5 ±90° samples by default), populates
   `MotorProfile::t_90deg_ms`, returns the measured mean. Replaces

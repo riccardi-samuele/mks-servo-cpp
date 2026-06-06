@@ -198,9 +198,9 @@ TEST_CASE("MotorProfile default values match library-wide defaults") {
 TEST_CASE("MotorProfile presets carry the documented values") {
     SUBCASE("V1.0.9 SR_CLOSE") {
         const auto p = MotorProfile::for_v1_0_9_sr_close();
-        CHECK(p.settle_drain_ms == 30);
+        CHECK(p.settle_drain_ms == 5);            // 6× shorter than V1.0.8
         CHECK(p.predispatch_drain_ms == 5);
-        CHECK(p.inter_move_rest_us == 5'000);     // 20x shorter
+        CHECK(p.inter_move_rest_us == 5'000);     // 20× shorter than V1.0.8
         CHECK(p.consecutive_in_window == 2);
         CHECK(p.t_90deg_ms == doctest::Approx(40.0));
     }
