@@ -155,9 +155,7 @@ int main(int argc, char** argv) {
                            /*tol_counts=*/50, /*timeout_us=*/3'000'000);
         const double dt0 = static_cast<double>(now_us() - t_m0) / 1000.0;
         t0.drain_input();
-        const auto t_s0 = now_us();
-        sleep_ms(settle_cap > 0 ? settle_cap : 0);
-        const double s0  = static_cast<double>(now_us() - t_s0) / 1000.0;
+        const double s0  = wait_until_stable(d0, settle_cap, poll_ms, consec);
         const double pos0 = counts_to_deg(d0.read_encoder_addition().value);
 
         // ── motor 1 ───────────────────────────────────────────────
@@ -166,9 +164,7 @@ int main(int argc, char** argv) {
                            /*tol_counts=*/50, /*timeout_us=*/3'000'000);
         const double dt1 = static_cast<double>(now_us() - t_m1) / 1000.0;
         t1.drain_input();
-        const auto t_s1 = now_us();
-        sleep_ms(settle_cap > 0 ? settle_cap : 0);
-        const double s1  = static_cast<double>(now_us() - t_s1) / 1000.0;
+        const double s1  = wait_until_stable(d1, settle_cap, poll_ms, consec);
         const double pos1 = counts_to_deg(d1.read_encoder_addition().value);
 
         cycle_ms.push_back(static_cast<double>(now_us() - t_c0) / 1000.0);
