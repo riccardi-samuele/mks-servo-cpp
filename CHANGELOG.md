@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- `examples/hil_two_motor_sequential_compliant.cpp` — coordination
+  example for two motors driving a compliant or detented mechanical
+  load (couplings with spring return, indexed mechanisms, multi-motor
+  setups joined through a common mechanism). Demonstrates the three
+  patterns documented in `docs/scheduler_guide.md` § "Coordinating
+  motors on compliant or detented loads": absolute targets via
+  `Motor::write` (no relative-drift accumulation), encoder-stable
+  adaptive settle (poll `read_encoder_addition` until consecutive
+  reads agree, instead of trusting firmware "Stopped"), and symmetric
+  application of the settle wait to all motors.
+
+### Documented
+- `docs/scheduler_guide.md` — new section on compliant/detented
+  loads: why `move_relative(±step)` accumulates drift on coupled
+  setups, why an asymmetric settle makes identical motors look
+  different, and why `holding_current = 10 %` is the safer default
+  when the load has detent self-recovery.
+- `docs/setup_guide.md` — new section "Flash settings:
+  apply-immediately vs apply-on-boot". HIL-validated: `SET_BAUD` and
+  `SET_HOLDING_CURRENT` ack=1 but require a power-cycle to take
+  effect. `SET_WORK_CURRENT` applies live. Verifying any
+  apply-on-boot change without rebooting can produce misleading
+  results.
+
+
 ## [0.4.0] — 2026-06-06
 
 ### Added
