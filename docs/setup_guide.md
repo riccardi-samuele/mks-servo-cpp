@@ -159,3 +159,39 @@ below, you're hitting the chopper-power limit — bump work_current.
 
 Alternatively, run `examples/hil_voltage_setup` (sweeps work_current
 values and prints the recommended setting for your supply).
+
+## Flash settings: apply-immediately vs apply-on-boot
+
+Not every `SET_*` command on this firmware takes effect at the moment
+the motor acknowledges it. Some flash writes ack successfully (the
+new value IS in flash) but the running firmware keeps using the
+previous value until the next power cycle. This is easy to miss
+because the ack on a non-immediate setting looks identical to the ack
+on an immediate one.
+
+Behaviour observed on V1.0.9 firmware (HIL-validated):
+
+| Command | Opcode | Applies live? | Notes |
+|---|---|---|---|
+| `SET_WORK_CURRENT` | `0x83` | **Yes** | Bumping mA mid-session restores torque immediately. Verified by going from a stall regime to a clean-move regime without rebooting. |
+| `SET_HOLDING_CURRENT` | `0x86` | **No — needs power-cycle** | Changing the holding percent silently has no effect on the motor until next boot. The flash holds the new value, ready for the next start. |
+| `SET_BAUD` | `0x8A` | **No — needs power-cycle** | Ack frame returned at the original baud, then the firmware keeps responding at the original baud. Reopening at the target baud fails until you reboot the motor. |
+| `set_work_mode` (SR_CLOSE / SR_vFOC) | `0x82` | Unverified (suspected on-boot) | Treat as apply-on-boot to be safe. |
+| `SET_DIRECTION` | `0x85` | Unverified (suspected on-boot) | Treat as apply-on-boot. |
+| `SET_SUBDIVISION` | `0x84` | Unverified (suspected on-boot) | Treat as apply-on-boot. |
+
+The safe operating procedure for any "apply-on-boot" change:
+
+1. Send the `SET_*` command. Verify ack=1.
+2. Power-cycle the motor (cut 12 V/24 V supply, wait 1 s, restore).
+3. Reopen the transport and run a quick read (`read_encoder_addition`)
+   to confirm the firmware is back up.
+4. Run a verification move to confirm the new setting has the
+   intended behaviour.
+
+Validating a change WITHOUT a power cycle is misleading: you may see
+the new flash value reported on a read but the motor's runtime
+behaviour still reflects the old setting. If a change of e.g.
+`holding_current` doesn't visibly affect motion behaviour, that
+usually means the firmware hasn't picked up the new value yet — not
+that the value didn't change.

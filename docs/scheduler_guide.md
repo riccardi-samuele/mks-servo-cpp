@@ -249,6 +249,119 @@ parameters depend on the previous one's outcome), keep `.after()`.
 For "always do A then B then …" choreographies, `.at_progress(0.90)`
 is essentially free.
 
+## Coordinating motors on compliant or detented loads
+
+This section covers a class of mechanical setups where the standard
+"firmware reports Stopped → next move dispatches" pattern fails:
+
+- **Detented loads** — Geneva drives, indexed couplings, magnetic
+  centring, click-detent mechanisms. The load has stable rest states
+  separated by an unstable transition zone.
+- **Compliant loads** — couplings with spring return, tendon drives,
+  loaded gear trains where the load keeps moving for several ms after
+  the motor has electrically stopped.
+- **Mechanically coupled multi-motor setups** — two or more motors
+  whose loads are joined through a common mechanism that requires all
+  loads to be at a rest state before any single motor can move next.
+
+On such setups, three things go wrong with naive sequential
+coordination:
+
+1. **`firmware Stopped ≠ load at rest`**. The motor's PI loop declares
+   Stopped while the load is still settling toward its rest state.
+   Dispatching the next motor's move during this window can jam the
+   common mechanism.
+2. **`move_relative(±step_deg)` accumulates drift**. Each move's
+   tolerance-bounded overshoot becomes the starting point of the next
+   move. After N cycles the encoder is N × overshoot off from the
+   nominal axis position, even though the physical load may still be
+   near its detent.
+3. **Asymmetric settle handling makes identical motors look different.**
+   If you wait for M0's load to settle after M0 moves but skip the wait
+   after M1, then M0 always starts its next move from a fully-settled
+   state and M1 doesn't — so M1 appears to drift more even when the
+   hardware is identical.
+
+The three patterns below address each:
+
+### 1. Use absolute targets, not relative deltas
+
+Instead of `m.move_relative(±step_deg)` per cycle, track the expected
+axis position in your code and use `m.write(absolute_target_deg, …)`:
+
+```cpp
+double target = 0.0;
+for (int i = 0; i < N; ++i) {
+    target += (i & 1) ? -90.0 : 90.0;          // accumulates in user code
+    m.write(target, mp, /*blocking=*/true, /*tol_counts=*/50);
+}
+```
+
+`Motor::write` dispatches `MOVE_ABS_AXIS` (cmd `0xF5`), so each move
+targets the absolute axis position regardless of where the previous
+one happened to land. Single-move overshoot becomes a static offset,
+not a ratcheting drift.
+
+### 2. Confirm load-at-rest by polling the encoder, not by trusting "Stopped"
+
+For compliant loads, replace blind `sleep_ms(settle)` calls with an
+adaptive wait that polls `read_encoder_addition` until consecutive
+reads agree to within a small threshold:
+
+```cpp
+static double wait_until_stable(RawDriver& d, int cap_ms) {
+    auto t0 = now_us();
+    std::int64_t prev = d.read_encoder_addition().value;
+    int stable = 0;
+    while (stable < 3) {
+        sleep_ms(15);
+        std::int64_t cur = d.read_encoder_addition().value;
+        if (std::abs(cur - prev) <= 2) ++stable;
+        else                            stable = 0;
+        prev = cur;
+        if ((now_us() - t0) > (uint64_t)cap_ms * 1000) break;
+    }
+    return (now_us() - t0) / 1000.0;
+}
+```
+
+Typical wait on a free-running load: 15-30 ms (one or two poll
+intervals). On a heavy compliant load: 80-150 ms. The cap_ms ceiling
+protects against pathological cases where the load never reaches a
+rest state (e.g. a true mechanical bind).
+
+### 3. Apply the settle wait symmetrically to every motor
+
+Sequential coordination across N motors needs **every** motor's load
+to be at rest before the next motor dispatches. Apply the wait after
+each motor's move, not only after the first one. The bench example
+in `examples/hil_two_motor_sequential_compliant.cpp` walks through a
+2-motor variant of this pattern and a 50-cycle soak.
+
+### Holding current and the detent-recovery tradeoff
+
+A detented load with **low holding current** (e.g. 10 %) will
+self-correct into its detent after each move: the detent spring
+overpowers the motor's holding torque and pulls the rotor through the
+last fraction of a degree. The motor's encoder shows a constant
+per-move offset, but the load is consistently at its detent rest
+state. This is the regime where the absolute-target pattern is
+self-healing — drift on the encoder doesn't translate into drift of
+the load.
+
+With **high holding current** (≥ 30-50 %), the motor wins against the
+detent spring and locks the rotor at the firmware's "good enough"
+stop position. The load stays slightly off its rest state. On a
+mechanically coupled multi-motor setup this accumulates across cycles
+and eventually jams the common mechanism.
+
+For detented loads on this firmware, **`holding_current = 10 %` is
+the safer default** for sequential coordination — the lower
+mechanical determinism is offset by the load's intrinsic
+self-recovery, and the lower idle current keeps the motor cooler.
+Note that `SET_HOLDING_CURRENT` requires a power-cycle to take
+effect (see `docs/setup_guide.md`).
+
 ## Performance numbers (HIL, 3 motors, 12V/5A)
 
 From `hil_scheduler_n3` (V1.0.9 SR_CLOSE) on a freshly idle fleet:
@@ -273,5 +386,6 @@ of sequential wall time.
 - `examples/hil_scheduler_n3.cpp` — 3-motor full bench
 - `examples/hil_motor_profile_demo.cpp` — probe + presets end-to-end
 - `examples/hil_inter_move_rest_sweep.cpp` — empirical tuning sweep
+- `examples/hil_two_motor_sequential_compliant.cpp` — coordination on compliant/detented loads
 - [`docs/setup_guide.md`](setup_guide.md) — supply / work_current
 - [`docs/design.md`](design.md) — architecture decisions
